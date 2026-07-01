@@ -1,0 +1,43 @@
+# fand example config — install to /etc/fand/config.toml
+# Values below match the verified target hardware (ASRock B650E Taichi /
+# NCT6799D, Ryzen 7 7800X3D via k10temp, RTX 4090 via NVML).
+
+[daemon]
+tick_seconds = 2
+
+[sensors.cpu]
+kind = "hwmon"
+hwmon_name = "k10temp"
+input = "temp1_input"      # Tctl
+
+[sensors.gpu]
+kind = "nvml"
+device_index = 0
+
+[curves.cpu_rad]
+points = [[40, 80], [60, 130], [75, 200], [85, 255]]
+
+[curves.cpu_case]
+points = [[45, 90], [70, 160], [85, 255]]
+
+[curves.gpu_case]
+points = [[45, 90], [60, 140], [75, 255]]
+
+# pwm1: CPU radiator — 3 fans daisy-chained on one header; coolant thermal
+# mass justifies the longer smoothing window.
+[channels.pwm1]
+hwmon_name = "nct6799"
+policy = "single"
+sensor = "cpu"
+curve = "cpu_rad"
+min_pwm = 70
+smoothing_seconds = 12
+
+# pwm2: case fans — mix mode, max-of-outputs across CPU and GPU curves.
+[channels.pwm2]
+hwmon_name = "nct6799"
+policy = "mix"
+inputs = [{ sensor = "cpu", curve = "cpu_case" }, { sensor = "gpu", curve = "gpu_case" }]
+min_pwm = 70
+smoothing_seconds = 5
+zero_rpm = false           # opt-in; if true, requires kick_pwm + kick_seconds

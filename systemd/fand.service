@@ -1,0 +1,23 @@
+[Unit]
+Description=fand fan control daemon
+After=multi-user.target
+
+[Service]
+Type=simple
+ExecStart=/usr/local/bin/fand
+ExecStopPost=/usr/local/bin/fand --restore-auto
+Restart=on-failure
+RestartSec=2
+
+RuntimeDirectory=fand
+RuntimeDirectoryMode=0750
+ProtectSystem=strict
+ReadWritePaths=/etc/fand
+ProtectHome=yes
+PrivateTmp=yes
+NoNewPrivileges=yes
+# NOTE: do NOT set ProtectKernelTunables=yes — it blocks hwmon sysfs writes.
+# NVML needs access to /dev/nvidia*; if DevicePolicy is tightened, allow those nodes.
+
+[Install]
+WantedBy=multi-user.target
