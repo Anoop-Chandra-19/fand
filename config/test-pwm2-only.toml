@@ -1,0 +1,33 @@
+# Phase 2 manual hardware test config: controls ONLY pwm2 (case fans via the
+# Lancool 216 hub) — pwm1 (AIO pump + rad) stays under firmware control.
+# Per CLAUDE.md, test pwm2 first, pwm1 after.
+#
+#   sudo ./target/debug/fand --config config/test-pwm2-only.toml
+#
+# Ctrl-C must hand pwm2 back to firmware (pwm2_enable = 5). Delete this file
+# once the real config is proven.
+
+[daemon]
+tick_seconds = 2
+
+[sensors.cpu]
+kind = "hwmon"
+hwmon_name = "k10temp"
+input = "temp1_input"      # Tctl
+
+[sensors.gpu]
+kind = "nvml"
+device_index = 0
+
+[curves.cpu_case]
+points = [[45, 90], [70, 160], [85, 255]]
+
+[curves.gpu_case]
+points = [[45, 90], [60, 140], [75, 255]]
+
+[channels.pwm2]
+hwmon_name = "nct6799"
+policy = "mix"
+inputs = [{ sensor = "cpu", curve = "cpu_case" }, { sensor = "gpu", curve = "gpu_case" }]
+min_pwm = 70
+smoothing_seconds = 5

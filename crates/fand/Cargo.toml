@@ -13,3 +13,7 @@ toml.workspace = true
 anyhow.workspace = true
 clap.workspace = true
 nvml-wrapper.workspace = true
+signal-hook.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true

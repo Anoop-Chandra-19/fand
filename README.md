@@ -9,8 +9,8 @@ Safety invariants: [CLAUDE.md](CLAUDE.md).
 
 ## Status
 
-- [ ] Phase 1 — `fand-core`: config types, curve eval, mix mode, hysteresis/ramp (pure + unit tests)
-- [ ] Phase 2 — daemon MVP: hwmon/NVML, control loop, failsafe guard, `--restore-auto`
+- [x] Phase 1 — `fand-core`: config types, curve eval, mix mode, hysteresis/ramp (pure + unit tests)
+- [x] Phase 2 — daemon MVP: hwmon/NVML, control loop, failsafe guard, `--restore-auto` (code + dry-run verified; live hardware test pending: pwm2 first, then pwm1)
 - [ ] Phase 3 — systemd unit + install script
 - [ ] Phase 4 — socket server + `fanctl status/watch`
 - [ ] Phase 5 — config file, validation, hot reload, remaining fanctl commands

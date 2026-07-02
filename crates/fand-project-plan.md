@@ -21,8 +21,8 @@ resolve hwmon devices by `name` file at runtime, never by index.
 
 | Channel | Wired? | Physical | Notes |
 |---|---|---|---|
-| fan1 / pwm1 | yes (~636 RPM idle) | **Arctic Liquid Freezer II 360**: pump + VRM fan + 3 rad fans daisy-chained on one header (pump has no tach) | rad has coolant thermal mass → longer smoothing window. **Pump shares this PWM: zero_rpm forbidden; min_pwm ≥ 80** (pump sits at its 800 RPM floor below ~40% duty; firmware auto idles at 77/255, proven safe) |
-| fan2 / pwm2 | yes (~775 RPM idle) | Case fans via Lancool 216 built-in controller (PWM passthrough) | verified manual control: pwm=100 → 895 RPM, pwm=255 → 1483 RPM; hub reports one tach for the group |
+| fan1 / pwm1 | yes (~636 RPM idle) | CPU radiator — **3 fans daisy-chained** on one header | rad has coolant thermal mass → longer smoothing window |
+| fan2 / pwm2 | yes (~775 RPM idle) | Case intake/exhaust | verified manual control: pwm=100 → 895 RPM, pwm=255 → 1483 RPM |
 | fan3–fan5 | no (0 RPM) | empty headers | probe liveness at startup, never write to dead channels |
 | pwm7 | exists in sysfs | no matching fan_input | ignore |
 
@@ -78,8 +78,7 @@ for each configured channel:
     smoothed = rolling average over channel's window (rad channel: longer window, e.g. 10–15 s; case: ~5 s)
     target_pwm = channel policy (see §4)
     apply hysteresis: only move if |target − current| ≥ deadband (e.g. 3 PWM units) or temp crossed a curve point
-    ramp: step current toward target, asymmetric — max_step_up per tick (fast, e.g. 10)
-          vs max_step_down per tick (slow, e.g. 3) so fans respond to load but decay quietly
+    ramp: step current toward target by max_step per tick (no instant jumps)
     clamp to [channel.min_pwm, 255]; write to sysfs
 ```
 

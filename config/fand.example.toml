@@ -23,21 +23,29 @@ points = [[45, 90], [70, 160], [85, 255]]
 [curves.gpu_case]
 points = [[45, 90], [60, 140], [75, 255]]
 
-# pwm1: CPU radiator — 3 fans daisy-chained on one header; coolant thermal
-# mass justifies the longer smoothing window.
+# pwm1: Arctic Liquid Freezer II 360 — pump + VRM fan + 3 rad fans all share
+# this one PWM signal; coolant thermal mass justifies the longer smoothing
+# window. Never enable zero_rpm here. Pump runs at its 800 RPM minimum below
+# ~40% duty; firmware auto idles this system at 77/255 (~30%) without issue,
+# so min_pwm = 80 stays at/above the observed-safe floor.
 [channels.pwm1]
 hwmon_name = "nct6799"
 policy = "single"
 sensor = "cpu"
 curve = "cpu_rad"
-min_pwm = 70
+min_pwm = 80
 smoothing_seconds = 12
+max_step_up = 10
+max_step_down = 3
 
-# pwm2: case fans — mix mode, max-of-outputs across CPU and GPU curves.
+# pwm2: case fans (via Lancool 216 built-in controller, PWM passthrough) —
+# mix mode, max-of-outputs across CPU and GPU curves.
 [channels.pwm2]
 hwmon_name = "nct6799"
 policy = "mix"
 inputs = [{ sensor = "cpu", curve = "cpu_case" }, { sensor = "gpu", curve = "gpu_case" }]
 min_pwm = 70
 smoothing_seconds = 5
+max_step_up = 10
+max_step_down = 3
 zero_rpm = false           # opt-in; if true, requires kick_pwm + kick_seconds

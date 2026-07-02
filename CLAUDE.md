@@ -17,6 +17,10 @@ This daemon writes to real fan hardware as root. Non-negotiable:
   controlled PWMs ⇒ restore auto ⇒ exit nonzero. Never loop on stale data.
 - min_pwm floor default 60+ unless zero_rpm is explicitly enabled with kick
   parameters (kick_pwm ~100 for a few seconds when leaving 0).
+- **pwm1 carries the AIO pump inline** (Arctic Liquid Freezer II 360: pump +
+  VRM fan + 3 rad fans on one header, pump has no tach). zero_rpm must never
+  be enabled on pwm1, and its min_pwm stays ≥ 80 (~31% duty — at/above the
+  firmware-auto idle of 77/255 this system has proven safe).
 - Resolve hwmon devices by `name` file at every start ("nct6799", "k10temp");
   indices are not stable across boots.
 - Never control GPU fans — the GPU is a temperature input only (via NVML).
