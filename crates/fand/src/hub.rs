@@ -1,12 +1,24 @@
-//! Latest-status cell shared between the control loop (single writer) and
-//! socket connection threads (readers). A Condvar wakes subscribers on each
-//! publish; the sequence number lets a subscriber tell "new snapshot" from
-//! "same one again" after a wakeup.
+//! Shared glue between the control loop and socket connection threads:
+//! a latest-status cell (loop → clients) and the command envelope
+//! (clients → loop).
+//!
+//! StatusHub: single writer, many readers. A Condvar wakes subscribers on
+//! each publish; the sequence number lets a subscriber tell "new snapshot"
+//! from "same one again" after a wakeup.
 
-use std::sync::{Condvar, Mutex};
+use std::sync::{mpsc, Condvar, Mutex};
 use std::time::Duration;
 
-use fand_proto::Status;
+use fand_proto::{Command, Response, Status};
+
+/// A client request forwarded to the engine thread, plus the channel its
+/// answer comes back on (rendezvous style — the connection thread blocks
+/// until the engine actually handled it, so replies report real outcomes,
+/// not "queued").
+pub struct EngineCommand {
+    pub cmd: Command,
+    pub reply: mpsc::Sender<Response>,
+}
 
 #[derive(Default)]
 pub struct StatusHub {

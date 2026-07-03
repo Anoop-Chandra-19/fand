@@ -88,30 +88,41 @@ fn run(args: &Args) -> Result<()> {
         return Ok(());
     }
 
-    let mut engine = engine::Engine::from_config(&cfg, Path::new(HWMON_ROOT), args.dry_run)?;
+    let mut engine =
+        engine::Engine::from_config(&cfg, &toml, Path::new(HWMON_ROOT), args.dry_run)?;
 
     let shutdown = Arc::new(AtomicBool::new(false));
-    for sig in [SIGTERM, SIGINT, SIGQUIT, SIGHUP] {
+    for sig in [SIGTERM, SIGINT, SIGQUIT] {
         signal_hook::flag::register(sig, Arc::clone(&shutdown))
             .with_context(|| format!("registering handler for signal {sig}"))?;
     }
+    // SIGHUP means "reload the config", the conventional daemon meaning
+    // (systemd ExecReload sends it).
+    let reload = Arc::new(AtomicBool::new(false));
+    signal_hook::flag::register(SIGHUP, Arc::clone(&reload))
+        .context("registering SIGHUP handler")?;
 
     // Failsafe in place BEFORE any pwmN_enable is touched. The guard binding
-    // must live until run() returns — its Drop is what restores firmware auto.
+    // must live until run() returns — its Drop is what restores firmware
+    // auto. The path list is shared with the engine so hot reloads keep it
+    // in sync with the controlled-channel set.
     let _guard = if args.dry_run {
         None
     } else {
-        let paths = engine.enable_paths();
+        let paths = failsafe::SharedPaths::new(engine.enable_paths());
         failsafe::install_panic_hook(paths.clone());
+        engine.set_failsafe_paths(paths.clone());
         Some(failsafe::FailsafeGuard::new(paths))
     };
+    engine.set_config_source(args.config.clone());
 
     let hub = Arc::new(hub::StatusHub::default());
+    let (cmd_tx, cmd_rx) = std::sync::mpsc::channel();
     let (listener, _socket_cleanup) = server::bind(&args.socket)?;
-    server::spawn(listener, Arc::clone(&hub));
+    server::spawn(listener, Arc::clone(&hub), cmd_tx);
 
     engine.take_control()?;
-    engine.run(&shutdown, &hub)
+    engine.run(&shutdown, &reload, &hub, &cmd_rx)
 }
 
 /// Standalone cleanup for systemd ExecStopPost: write pwmN_enable = 5 to

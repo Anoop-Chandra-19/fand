@@ -5,6 +5,8 @@ After=multi-user.target
 [Service]
 Type=simple
 ExecStart=/usr/local/bin/fand
+# SIGHUP = hot-reload /etc/fand/config.toml (systemctl reload fand)
+ExecReload=/bin/kill -HUP $MAINPID
 ExecStopPost=/usr/local/bin/fand --restore-auto
 Restart=on-failure
 RestartSec=2

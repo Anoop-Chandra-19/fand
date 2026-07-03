@@ -33,13 +33,28 @@ impl Request {
     }
 }
 
-/// Wire form: `{"version":1,"cmd":"get_status"}`. Config and override
-/// commands land in phase 5.
+/// Wire form: `{"version":1,"cmd":"get_status"}`; variants with fields
+/// flatten them alongside the tag, e.g.
+/// `{"version":1,"cmd":"set_override","channel":"pwm2","pwm":140,"ttl_seconds":60}`.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "cmd", rename_all = "snake_case")]
 pub enum Command {
     GetStatus,
     SubscribeStatus,
+    /// Current applied config as TOML text (comments preserved).
+    GetConfig,
+    /// Validate, hot-apply, then persist to the daemon's config path.
+    SetConfig { toml: String },
+    /// Re-read the config file from disk and hot-apply it.
+    ReloadConfig,
+    /// Pin a channel to a fixed PWM until the TTL expires. The daemon
+    /// enforces the channel's safety floor; this is not a raw write.
+    SetOverride {
+        channel: String,
+        pwm: u8,
+        ttl_seconds: u64,
+    },
+    ClearOverride { channel: String },
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -62,6 +77,17 @@ impl Response {
         }
     }
 
+    /// Success with no payload — for commands that only *do* something
+    /// (override, reload) rather than fetch something.
+    pub fn ok_empty() -> Self {
+        Self {
+            version: PROTOCOL_VERSION,
+            ok: true,
+            error: None,
+            data: None,
+        }
+    }
+
     pub fn err(message: impl Into<String>) -> Self {
         Self {
             version: PROTOCOL_VERSION,
@@ -78,6 +104,7 @@ impl Response {
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum ResponseData {
     Status(Status),
+    Config { toml: String },
 }
 
 /// One snapshot of the daemon's world, produced once per control tick.
@@ -96,10 +123,15 @@ pub struct ChannelStatus {
     pub rpm: u32,
     /// PWM actually written this tick (ramp output).
     pub current_pwm: u8,
-    /// Raw curve/mix target this tick, before hysteresis/ramping.
+    /// Raw curve/mix target this tick, before hysteresis/ramping. Reports
+    /// the curve value even while an override is active, so clients can
+    /// show what the channel would do on its own.
     pub target_pwm: u8,
-    /// "manual" for now; overrides and failsafe states arrive later.
+    /// "curve" (following its curve/mix policy) or "override" (pinned).
     pub mode: String,
+    /// Seconds until an active override expires; absent in curve mode.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub override_remaining_s: Option<u64>,
 }
 
 #[cfg(test)]
@@ -115,7 +147,8 @@ mod tests {
                     rpm: 750,
                     current_pwm: 94,
                     target_pwm: 96,
-                    mode: "manual".into(),
+                    mode: "curve".into(),
+                    override_remaining_s: None,
                 },
             )]),
         }
@@ -128,12 +161,59 @@ mod tests {
     }
 
     #[test]
+    fn override_wire_format_is_stable() {
+        let cmd = Command::SetOverride {
+            channel: "pwm2".into(),
+            pwm: 140,
+            ttl_seconds: 60,
+        };
+        let json = serde_json::to_string(&Request::new(cmd)).unwrap();
+        assert_eq!(
+            json,
+            r#"{"version":1,"cmd":"set_override","channel":"pwm2","pwm":140,"ttl_seconds":60}"#
+        );
+    }
+
+    #[test]
     fn requests_round_trip() {
-        for cmd in [Command::GetStatus, Command::SubscribeStatus] {
+        let commands = [
+            Command::GetStatus,
+            Command::SubscribeStatus,
+            Command::GetConfig,
+            Command::SetConfig {
+                toml: "[daemon]\ntick_seconds = 2\n".into(),
+            },
+            Command::ReloadConfig,
+            Command::SetOverride {
+                channel: "pwm2".into(),
+                pwm: 140,
+                ttl_seconds: 60,
+            },
+            Command::ClearOverride {
+                channel: "pwm2".into(),
+            },
+        ];
+        for cmd in commands {
             let req = Request::new(cmd);
             let json = serde_json::to_string(&req).unwrap();
             assert_eq!(serde_json::from_str::<Request>(&json).unwrap(), req);
         }
+    }
+
+    #[test]
+    fn config_response_round_trips() {
+        let resp = Response::ok(ResponseData::Config {
+            toml: "[daemon]\n".into(),
+        });
+        let json = serde_json::to_string(&resp).unwrap();
+        assert!(json.contains(r#""kind":"config""#));
+        assert_eq!(serde_json::from_str::<Response>(&json).unwrap(), resp);
+    }
+
+    #[test]
+    fn status_without_override_omits_remaining_seconds() {
+        let json = serde_json::to_string(&sample_status()).unwrap();
+        assert!(!json.contains("override_remaining_s"));
     }
 
     #[test]

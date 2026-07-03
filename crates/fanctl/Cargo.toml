@@ -6,7 +6,10 @@ license.workspace = true
 
 [dependencies]
 fand-proto.workspace = true
+fand-core.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 anyhow.workspace = true
 clap.workspace = true
+tempfile.workspace = true
+toml_edit.workspace = true

@@ -5,10 +5,32 @@
 
 use std::fs;
 use std::path::PathBuf;
+use std::sync::{Arc, Mutex};
 
 /// pwmN_enable value for firmware auto on the NCT6799 (verified on the
 /// target board; `1` would be manual).
 pub const FIRMWARE_AUTO: &str = "5";
+
+/// The set of pwmN_enable paths to restore on exit, shared between the
+/// Drop guard, the panic hook, and the engine (which updates it when a hot
+/// reload changes the controlled-channel set). Clones share one list.
+#[derive(Clone)]
+pub struct SharedPaths(Arc<Mutex<Vec<PathBuf>>>);
+
+impl SharedPaths {
+    pub fn new(paths: Vec<PathBuf>) -> Self {
+        Self(Arc::new(Mutex::new(paths)))
+    }
+
+    /// Replace the whole list (hot reload changed the channel set).
+    pub fn set(&self, paths: Vec<PathBuf>) {
+        *self.0.lock().unwrap() = paths;
+    }
+
+    pub fn snapshot(&self) -> Vec<PathBuf> {
+        self.0.lock().unwrap().clone()
+    }
+}
 
 /// Best-effort restore: logs failures instead of returning them, because
 /// this runs inside Drop and the panic hook where erroring out is not an
@@ -28,11 +50,11 @@ pub fn restore_all(enable_paths: &[PathBuf]) {
 /// Construct BEFORE taking manual control of any channel; keep alive for
 /// the daemon's whole lifetime. Drop hands every channel back to firmware.
 pub struct FailsafeGuard {
-    enable_paths: Vec<PathBuf>,
+    enable_paths: SharedPaths,
 }
 
 impl FailsafeGuard {
-    pub fn new(enable_paths: Vec<PathBuf>) -> Self {
+    pub fn new(enable_paths: SharedPaths) -> Self {
         Self { enable_paths }
     }
 }
@@ -40,19 +62,19 @@ impl FailsafeGuard {
 impl Drop for FailsafeGuard {
     fn drop(&mut self) {
         eprintln!("fand: restoring firmware-auto fan control");
-        restore_all(&self.enable_paths);
+        restore_all(&self.enable_paths.snapshot());
     }
 }
 
 /// Chain a restore onto the default panic handler. The Drop guard already
 /// covers unwinding panics on the main thread; the hook additionally covers
 /// panic=abort builds and panics on other threads.
-pub fn install_panic_hook(enable_paths: Vec<PathBuf>) {
+pub fn install_panic_hook(enable_paths: SharedPaths) {
     let default_hook = std::panic::take_hook();
     std::panic::set_hook(Box::new(move |info| {
         default_hook(info);
         eprintln!("fand: panic — restoring firmware-auto fan control");
-        restore_all(&enable_paths);
+        restore_all(&enable_paths.snapshot());
     }));
 }
 
@@ -69,9 +91,30 @@ mod tests {
         fs::write(&p1, "1").unwrap();
         fs::write(&p2, "1").unwrap();
 
-        drop(FailsafeGuard::new(vec![p1.clone(), p2.clone()]));
+        drop(FailsafeGuard::new(SharedPaths::new(vec![
+            p1.clone(),
+            p2.clone(),
+        ])));
 
         assert_eq!(fs::read_to_string(&p1).unwrap(), "5");
+        assert_eq!(fs::read_to_string(&p2).unwrap(), "5");
+    }
+
+    #[test]
+    fn guard_sees_path_updates_made_after_construction() {
+        let dir = tempfile::tempdir().unwrap();
+        let p1 = dir.path().join("pwm1_enable");
+        let p2 = dir.path().join("pwm2_enable");
+        fs::write(&p1, "1").unwrap();
+        fs::write(&p2, "1").unwrap();
+
+        let shared = SharedPaths::new(vec![p1.clone()]);
+        let guard = FailsafeGuard::new(shared.clone());
+        // Hot reload swaps the channel set: pwm1 out, pwm2 in.
+        shared.set(vec![p2.clone()]);
+        drop(guard);
+
+        assert_eq!(fs::read_to_string(&p1).unwrap(), "1", "pwm1 no longer ours");
         assert_eq!(fs::read_to_string(&p2).unwrap(), "5");
     }
 

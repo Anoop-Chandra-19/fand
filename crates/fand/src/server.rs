@@ -7,14 +7,20 @@ use std::io::{BufRead, BufReader, Write};
 use std::os::unix::fs::PermissionsExt;
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
+use std::sync::{mpsc, Arc};
 use std::thread;
 use std::time::Duration;
 
 use anyhow::{Context, Result};
 use fand_proto::{Command, Request, Response, ResponseData, PROTOCOL_VERSION};
 
-use crate::hub::StatusHub;
+use crate::hub::{EngineCommand, StatusHub};
+
+/// How long a connection thread waits for the engine to answer a forwarded
+/// command. Normal handling is sub-second; hitting this means the control
+/// loop is wedged (e.g. blocked on hardware), which the client should hear
+/// about rather than hang.
+const ENGINE_REPLY_TIMEOUT: Duration = Duration::from_secs(5);
 
 /// Removes the socket file on drop so a clean shutdown never leaves a stale
 /// path behind (an unclean one is handled by `bind` unlinking first).
@@ -56,14 +62,15 @@ pub fn bind(path: &Path) -> Result<(UnixListener, SocketCleanup)> {
 
 /// Accept loop in its own thread, one more thread per connection. Client
 /// errors (bad JSON, hangups) never propagate to the daemon.
-pub fn spawn(listener: UnixListener, hub: Arc<StatusHub>) {
+pub fn spawn(listener: UnixListener, hub: Arc<StatusHub>, commands: mpsc::Sender<EngineCommand>) {
     thread::spawn(move || {
         for stream in listener.incoming() {
             match stream {
                 Ok(stream) => {
                     let hub = Arc::clone(&hub);
+                    let commands = commands.clone();
                     thread::spawn(move || {
-                        let _ = handle_client(stream, &hub);
+                        let _ = handle_client(stream, &hub, &commands);
                     });
                 }
                 Err(e) => eprintln!("fand: accept failed: {e}"),
@@ -72,7 +79,11 @@ pub fn spawn(listener: UnixListener, hub: Arc<StatusHub>) {
     });
 }
 
-fn handle_client(stream: UnixStream, hub: &StatusHub) -> Result<()> {
+fn handle_client(
+    stream: UnixStream,
+    hub: &StatusHub,
+    commands: &mpsc::Sender<EngineCommand>,
+) -> Result<()> {
     let mut writer = stream.try_clone().context("cloning stream")?;
     let reader = BufReader::new(stream);
     for line in reader.lines() {
@@ -106,6 +117,10 @@ fn handle_client(stream: UnixStream, hub: &StatusHub) -> Result<()> {
                 send(&mut writer, &response)?;
             }
             Command::SubscribeStatus => return subscribe(&mut writer, hub),
+            // Everything else needs engine state (config, overrides) and is
+            // handled on the engine thread — the only place that may touch
+            // hardware.
+            cmd => send(&mut writer, &forward_to_engine(cmd, commands))?,
         }
     }
     Ok(())
@@ -125,6 +140,26 @@ fn subscribe(writer: &mut UnixStream, hub: &StatusHub) -> Result<()> {
             last_seq = seq;
             send(writer, &Response::ok(ResponseData::Status(status)))?;
         }
+    }
+}
+
+/// Rendezvous with the engine thread: send the command with a fresh reply
+/// channel, then block (bounded) for the outcome.
+fn forward_to_engine(cmd: Command, commands: &mpsc::Sender<EngineCommand>) -> Response {
+    let (reply_tx, reply_rx) = mpsc::channel();
+    if commands
+        .send(EngineCommand {
+            cmd,
+            reply: reply_tx,
+        })
+        .is_err()
+    {
+        // Receiver dropped — the control loop is gone (shutting down).
+        return Response::err("daemon is shutting down");
+    }
+    match reply_rx.recv_timeout(ENGINE_REPLY_TIMEOUT) {
+        Ok(response) => response,
+        Err(_) => Response::err("control loop did not respond in time"),
     }
 }
 
@@ -161,23 +196,31 @@ mod tests {
                     rpm: 750,
                     current_pwm: 94,
                     target_pwm: 96,
-                    mode: "manual".to_string(),
+                    mode: "curve".to_string(),
+                    override_remaining_s: None,
                 },
             )]),
         }
     }
 
-    /// Bound server on a temp socket + a connected client.
-    fn server_and_client() -> (tempfile::TempDir, Arc<StatusHub>, BufReader<UnixStream>) {
+    /// Bound server on a temp socket + a connected client. The returned
+    /// receiver is the test's stand-in for the engine thread.
+    fn server_and_client() -> (
+        tempfile::TempDir,
+        Arc<StatusHub>,
+        BufReader<UnixStream>,
+        mpsc::Receiver<EngineCommand>,
+    ) {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("fand.sock");
         let (listener, cleanup) = bind(&path).unwrap();
         // The TempDir handles file cleanup in tests.
         std::mem::forget(cleanup);
         let hub = Arc::new(StatusHub::default());
-        spawn(listener, Arc::clone(&hub));
+        let (cmd_tx, cmd_rx) = mpsc::channel();
+        spawn(listener, Arc::clone(&hub), cmd_tx);
         let client = UnixStream::connect(&path).unwrap();
-        (dir, hub, BufReader::new(client))
+        (dir, hub, BufReader::new(client), cmd_rx)
     }
 
     fn send_line(client: &mut BufReader<UnixStream>, line: &str) {
@@ -195,7 +238,7 @@ mod tests {
 
     #[test]
     fn get_status_returns_latest() {
-        let (_dir, hub, mut client) = server_and_client();
+        let (_dir, hub, mut client, _cmd_rx) = server_and_client();
         hub.publish(sample_status(54.5));
         send_line(&mut client, r#"{"version":1,"cmd":"get_status"}"#);
         let resp = read_response(&mut client);
@@ -209,7 +252,7 @@ mod tests {
 
     #[test]
     fn get_status_before_first_tick_is_an_error() {
-        let (_dir, _hub, mut client) = server_and_client();
+        let (_dir, _hub, mut client, _cmd_rx) = server_and_client();
         send_line(&mut client, r#"{"version":1,"cmd":"get_status"}"#);
         let resp = read_response(&mut client);
         assert!(!resp.ok);
@@ -218,7 +261,7 @@ mod tests {
 
     #[test]
     fn bad_json_gets_error_and_connection_survives() {
-        let (_dir, hub, mut client) = server_and_client();
+        let (_dir, hub, mut client, _cmd_rx) = server_and_client();
         hub.publish(sample_status(50.0));
         send_line(&mut client, "not json");
         assert!(!read_response(&mut client).ok);
@@ -229,7 +272,7 @@ mod tests {
 
     #[test]
     fn wrong_version_is_rejected() {
-        let (_dir, _hub, mut client) = server_and_client();
+        let (_dir, _hub, mut client, _cmd_rx) = server_and_client();
         send_line(&mut client, r#"{"version":99,"cmd":"get_status"}"#);
         let resp = read_response(&mut client);
         assert!(!resp.ok);
@@ -237,8 +280,41 @@ mod tests {
     }
 
     #[test]
+    fn engine_commands_are_forwarded_and_replied() {
+        let (_dir, _hub, mut client, cmd_rx) = server_and_client();
+        // Stub engine thread: answer one GetConfig with a fixed payload.
+        let stub = thread::spawn(move || {
+            let cmd = cmd_rx.recv().unwrap();
+            assert_eq!(cmd.cmd, Command::GetConfig);
+            cmd.reply
+                .send(Response::ok(ResponseData::Config {
+                    toml: "[daemon]\n".into(),
+                }))
+                .unwrap();
+        });
+        send_line(&mut client, r#"{"version":1,"cmd":"get_config"}"#);
+        let resp = read_response(&mut client);
+        assert!(resp.ok, "{resp:?}");
+        let Some(ResponseData::Config { toml }) = resp.data else {
+            panic!("expected config data, got {resp:?}");
+        };
+        assert_eq!(toml, "[daemon]\n");
+        stub.join().unwrap();
+    }
+
+    #[test]
+    fn engine_gone_yields_shutdown_error() {
+        let (_dir, _hub, mut client, cmd_rx) = server_and_client();
+        drop(cmd_rx);
+        send_line(&mut client, r#"{"version":1,"cmd":"reload_config"}"#);
+        let resp = read_response(&mut client);
+        assert!(!resp.ok);
+        assert!(resp.error.unwrap().contains("shutting down"));
+    }
+
+    #[test]
     fn subscribe_pushes_each_publish() {
-        let (_dir, hub, mut client) = server_and_client();
+        let (_dir, hub, mut client, _cmd_rx) = server_and_client();
         hub.publish(sample_status(50.0));
         send_line(&mut client, r#"{"version":1,"cmd":"subscribe_status"}"#);
         // Initial snapshot on subscribe...
