@@ -1,0 +1,28 @@
+@import "tailwindcss";
+
+/* fand design tokens — dark-first desktop utility. Colors are the
+   validated dark-surface palette; Tailwind v4 turns each --color-* into
+   utilities (bg-surface, text-muted, border-warning, …) and exposes them
+   as CSS variables for the charts. */
+@theme {
+  --color-page: #0d0d0d;
+  --color-surface: #1a1a19;
+  --color-ink: #ffffff;
+  --color-ink-2: #c3c2b7;
+  --color-muted: #898781;
+  --color-grid: #2c2c2a;
+  --color-axis: #383835;
+  --color-series-1: #3987e5;
+  --color-series-2: #199e70;
+  --color-warning: #fab219;
+  --color-critical: #d03b3b;
+  --color-good: #0ca30c;
+}
+
+@layer base {
+  body {
+    @apply bg-page text-ink antialiased;
+    font-synthesis: none;
+    text-rendering: optimizeLegibility;
+  }
+}

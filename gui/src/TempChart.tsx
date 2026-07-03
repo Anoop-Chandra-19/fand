@@ -25,36 +25,36 @@ export function TempChart({ history }: { history: Sample[] }) {
   return (
     <ResponsiveContainer width="100%" height={220}>
       <LineChart data={data} margin={{ top: 8, right: 48, bottom: 0, left: -16 }}>
-        <CartesianGrid stroke="var(--grid)" vertical={false} />
+        <CartesianGrid stroke="var(--color-grid)" vertical={false} />
         <XAxis
           dataKey="at"
           type="number"
           domain={["dataMin", "dataMax"]}
           tickFormatter={timeOfDay}
-          stroke="var(--muted)"
+          stroke="var(--color-muted)"
           tickLine={false}
-          axisLine={{ stroke: "var(--axis)" }}
+          axisLine={{ stroke: "var(--color-axis)" }}
           minTickGap={60}
         />
         <YAxis
           domain={[20, 100]}
           unit="°"
-          stroke="var(--muted)"
+          stroke="var(--color-muted)"
           tickLine={false}
           axisLine={false}
         />
         <Tooltip
           contentStyle={{
-            background: "var(--surface)",
-            border: "1px solid var(--border)",
+            background: "var(--color-surface)",
+            border: "1px solid var(--color-grid)",
             borderRadius: 6,
-            color: "var(--ink)",
+            color: "var(--color-ink)",
           }}
           labelFormatter={(at) => timeOfDay(at as number)}
           formatter={(value) => [`${(value as number).toFixed(1)} °C`]}
           isAnimationActive={false}
         />
-        <Legend wrapperStyle={{ color: "var(--ink-2)" }} iconType="plainline" />
+        <Legend wrapperStyle={{ color: "var(--color-ink-2)" }} iconType="plainline" />
         {sensors.map((name, i) => (
           <Line
             key={name}
