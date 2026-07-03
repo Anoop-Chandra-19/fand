@@ -17,48 +17,42 @@ export function ChannelCard({ name, label, channel, history }: Props) {
   }));
 
   return (
-    <article
-      className={`flex flex-col gap-2.5 rounded-[10px] border bg-surface px-4 py-3.5 ${
-        overriding ? "border-warning" : "border-white/10"
-      }`}
-    >
+    <article className="flex flex-col gap-3 rounded-xl bg-card px-4 py-3.5">
       <header className="flex items-start justify-between gap-2">
         <div>
-          <h3 className="font-semibold">{name}</h3>
-          {label && <span className="text-xs text-muted">{label}</span>}
+          <h3 className="font-bold">{name}</h3>
+          {label && <span className="text-[13px] text-dim">{label}</span>}
         </div>
         {overriding ? (
           <span
-            className="rounded-full bg-warning px-2 py-0.5 text-xs font-bold whitespace-nowrap text-surface"
+            className="rounded-full bg-warning/15 px-2.5 py-0.5 text-xs font-bold whitespace-nowrap text-warning"
             role="status"
           >
-            ⏱ override · {channel.override_remaining_s ?? 0}s left
+            Override · {channel.override_remaining_s ?? 0}s left
           </span>
         ) : (
-          <span className="rounded-full border border-white/10 px-2 py-0.5 text-xs whitespace-nowrap text-ink-2">
-            curve
+          <span className="rounded-full bg-white/10 px-2.5 py-0.5 text-xs whitespace-nowrap text-dim">
+            Curve
           </span>
         )}
       </header>
       <div className="flex items-end justify-between gap-3">
         <div>
-          <span className="text-4xl leading-none font-bold">
+          <span className="text-4xl leading-none font-light tabular-nums">
             {dutyPercent(channel.current_pwm)}%
           </span>
-          <span className="ml-1.5 text-xs text-muted">duty</span>
+          <span className="ml-1.5 text-[13px] text-dim">duty</span>
         </div>
-        <dl className="flex gap-4">
+        <dl className="flex gap-5">
           <div>
-            <dt className="text-[0.72rem] tracking-wider text-muted uppercase">fan</dt>
-            <dd className="text-[0.95rem] tabular-nums">
+            <dt className="text-xs text-dim">Fan speed</dt>
+            <dd className="text-[15px] tabular-nums">
               {channel.rpm.toLocaleString()} RPM
             </dd>
           </div>
           <div>
-            <dt className="text-[0.72rem] tracking-wider text-muted uppercase">
-              curve target
-            </dt>
-            <dd className="text-[0.95rem] tabular-nums">
+            <dt className="text-xs text-dim">Curve target</dt>
+            <dd className="text-[15px] tabular-nums">
               {dutyPercent(channel.target_pwm)}%
             </dd>
           </div>
@@ -70,7 +64,7 @@ export function ChannelCard({ name, label, channel, history }: Props) {
             <YAxis domain={[0, 255]} hide />
             <Line
               dataKey="pwm"
-              stroke={overriding ? "var(--color-warning)" : "var(--color-series-1)"}
+              stroke={overriding ? "var(--color-warning)" : "var(--color-accent)"}
               strokeWidth={2}
               dot={false}
               isAnimationActive={false}

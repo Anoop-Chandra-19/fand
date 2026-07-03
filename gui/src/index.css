@@ -1,27 +1,34 @@
 @import "tailwindcss";
 
-/* fand design tokens — dark-first desktop utility. Colors are the
-   validated dark-surface palette; Tailwind v4 turns each --color-* into
-   utilities (bg-surface, text-muted, border-warning, …) and exposes them
-   as CSS variables for the charts. */
+/* libadwaita dark named colors — the app should pass for a native GNOME
+   app. Chart series are the GNOME palette, CVD-validated against the
+   effective card surface (#363636). */
 @theme {
-  --color-page: #0d0d0d;
-  --color-surface: #1a1a19;
+  --font-sans: "Adwaita Sans", "Cantarell", "Inter", system-ui, sans-serif;
+
+  --color-window: #242424; /* window_bg_color */
+  --color-card: rgb(255 255 255 / 8%); /* card_bg_color */
+  --color-popover: #383838; /* popover_bg_color — chart tooltips */
   --color-ink: #ffffff;
-  --color-ink-2: #c3c2b7;
-  --color-muted: #898781;
-  --color-grid: #2c2c2a;
-  --color-axis: #383835;
-  --color-series-1: #3987e5;
-  --color-series-2: #199e70;
-  --color-warning: #fab219;
-  --color-critical: #d03b3b;
-  --color-good: #0ca30c;
+  --color-dim: rgb(255 255 255 / 55%); /* .dim-label */
+  --color-separator: rgb(255 255 255 / 10%);
+
+  --color-accent: #78aeed; /* accent_color */
+  --color-success: #26a269;
+  --color-warning: #f8e45c; /* warning_color */
+  --color-error-bg: #c01c28; /* error_bg_color */
+  --color-error: #ff7b63; /* error_color */
+
+  --color-series-1: #62a0ea; /* GNOME blue 2 */
+  --color-series-2: #33d17a; /* green 3 */
+  --color-series-3: #ffa348; /* orange 2 */
+  --color-series-4: #dc8add; /* purple 1 */
 }
 
 @layer base {
   body {
-    @apply bg-page text-ink antialiased;
+    @apply bg-window font-sans text-ink antialiased;
+    font-size: 15px; /* GNOME body text ≈ 11 pt */
     font-synthesis: none;
     text-rendering: optimizeLegibility;
   }
