@@ -8,7 +8,7 @@ import {
   XAxis,
   YAxis,
 } from "recharts";
-import type { Sample } from "./useDaemonStatus";
+import type { Sample } from "../daemon/types";
 
 // Categorical slots in fixed order (validated for the dark surface):
 // sensors are assigned by first appearance, never re-colored.

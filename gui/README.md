@@ -20,5 +20,19 @@ System prerequisite on Arch/CachyOS: `webkit2gtk-4.1`.
 `src-tauri` is intentionally excluded from the root cargo workspace so
 daemon-side `cargo test/clippy --workspace` stay fast.
 
+## Frontend layout
+
+`src/` is organized by feature, one folder per concern:
+
+- `daemon/` — everything that talks to the Rust backend: the TypeScript
+  mirror of the wire types and the Tauri-event hook. The GUI's twin of
+  `fand-proto`; write commands land here too when they arrive.
+- `dashboard/` — the read-only live view (temp chart, channel cards).
+- App shell (`main.tsx`, `App.tsx`, `index.css`) stays at the root.
+
+Future slices add sibling folders (`curves/` for the editor, `settings/`
+for the channel panel); a `components/` folder appears only once two
+features actually share a piece.
+
 Roadmap (PLAN.md §7): dashboard (this slice) → curve editor → channel
 settings panel.

@@ -1,6 +1,6 @@
-import { ChannelCard } from "./ChannelCard";
-import { TempChart } from "./TempChart";
-import { useDaemonStatus } from "./useDaemonStatus";
+import { useDaemonStatus } from "./daemon/useDaemonStatus";
+import { ChannelCard } from "./dashboard/ChannelCard";
+import { TempChart } from "./dashboard/TempChart";
 
 // Friendly names for the channels on this machine; unknown channels fall
 // back to their raw pwmN name.

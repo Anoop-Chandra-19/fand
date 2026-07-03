@@ -1,12 +1,6 @@
 import { listen } from "@tauri-apps/api/event";
 import { useEffect, useState } from "react";
-import type { Status } from "./types";
-
-export interface Sample {
-  /** Epoch milliseconds at which the frame arrived. */
-  at: number;
-  status: Status;
-}
+import type { Sample, Status } from "./types";
 
 /**
  * Live view of the daemon: latest frame, a rolling history for the charts,

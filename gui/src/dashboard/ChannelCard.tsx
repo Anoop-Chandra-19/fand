@@ -1,7 +1,6 @@
 import { Line, LineChart, ResponsiveContainer, YAxis } from "recharts";
-import type { ChannelStatus } from "./types";
-import { dutyPercent } from "./types";
-import type { Sample } from "./useDaemonStatus";
+import type { ChannelStatus, Sample } from "../daemon/types";
+import { dutyPercent } from "../daemon/types";
 
 interface Props {
   name: string;

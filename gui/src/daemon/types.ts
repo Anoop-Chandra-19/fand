@@ -15,6 +15,12 @@ export interface Status {
   channels: Record<string, ChannelStatus>;
 }
 
+export interface Sample {
+  /** Epoch milliseconds at which the frame arrived. */
+  at: number;
+  status: Status;
+}
+
 export function dutyPercent(pwm: number): number {
   return Math.round((pwm * 100) / 255);
 }
