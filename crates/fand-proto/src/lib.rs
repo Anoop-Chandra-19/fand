@@ -89,6 +89,8 @@ pub struct Status {
     pub channels: BTreeMap<String, ChannelStatus>,
 }
 
+/// PWM values are raw 0-255 (what hwmon and the config speak). Clients
+/// display them as duty percentages: round(pwm * 100 / 255).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ChannelStatus {
     pub rpm: u32,

@@ -115,13 +115,37 @@ fn print_status(status: &Status) {
     }
     println!();
     println!(
-        "{:<10}{:>6}{:>6}{:>8}  MODE",
-        "CHANNEL", "RPM", "PWM", "TARGET"
+        "{:<10}{:>6}{:>7}{:>8}  MODE",
+        "CHANNEL", "RPM", "DUTY", "TARGET"
     );
     for (name, ch) in &status.channels {
         println!(
-            "{:<10}{:>6}{:>6}{:>8}  {}",
-            name, ch.rpm, ch.current_pwm, ch.target_pwm, ch.mode
+            "{:<10}{:>6}{:>7}{:>8}  {}",
+            name,
+            ch.rpm,
+            duty_percent(ch.current_pwm),
+            duty_percent(ch.target_pwm),
+            ch.mode
         );
+    }
+}
+
+/// Raw PWM (0-255) as a duty percentage — what the wire carries vs what a
+/// human wants to read.
+fn duty_percent(pwm: u8) -> String {
+    format!("{}%", (f64::from(pwm) * 100.0 / 255.0).round() as u32)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::duty_percent;
+
+    #[test]
+    fn duty_percent_endpoints_and_rounding() {
+        assert_eq!(duty_percent(0), "0%");
+        assert_eq!(duty_percent(255), "100%");
+        assert_eq!(duty_percent(128), "50%");
+        // The pump-safety floor on pwm1.
+        assert_eq!(duty_percent(80), "31%");
     }
 }

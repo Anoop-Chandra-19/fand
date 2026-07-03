@@ -32,5 +32,27 @@ This daemon writes to real fan hardware as root. Non-negotiable:
 - `fand-core` stays pure (no I/O) and heavily unit-tested; all sysfs/NVML
   access lives in the `fand` crate.
 - Manual hardware tests: pwm2 (case) first, pwm1 (CPU radiator) after.
-- Build order is phased (plan §9); each phase should be shippable.
+- Build order is phased (plan §9); each phase should be shippable. Phases
+  start on the user's explicit go-ahead, not automatically.
+- The user manages git himself — never commit or push unless asked.
+- The user is learning Rust with this project: explain concepts in chat
+  when walking through new code; code comments only for genuinely subtle
+  logic, never for teaching syntax.
 - User's shell is fish — write any user-facing snippets/docs accordingly.
+
+## Deployed service (since 2026-07-02)
+
+fand is installed system-wide and enabled: `fand.service` controls the real
+fans at boot from `/usr/local/bin/fand` (a snapshot — NOT the repo build),
+config at `/etc/fand/config.toml`.
+
+- Never run a repo-built daemon against real hardware while the service is
+  up; `sudo systemctl stop fand` first (its ExecStopPost restores firmware
+  auto). Develop unprivileged instead:
+  `fand --dry-run --socket /tmp/... ` + `fanctl --socket /tmp/...`.
+- Shipping a change: `cargo build --release && sudo scripts/install.sh &&
+  sudo systemctl restart fand` (the user runs privileged commands himself).
+- Emergency hand-back at any time: `sudo fand --restore-auto`.
+- Health checkup: `systemctl status fand` (uptime/restarts/memory trend),
+  `journalctl -u fand` (grep FAILSAFE / implausible / restore),
+  `sg fand -c "fanctl status"`.
