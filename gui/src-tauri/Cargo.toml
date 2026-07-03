@@ -1,0 +1,22 @@
+[package]
+name = "fand-gui"
+version = "0.1.0"
+description = "Desktop dashboard for the fand fan control daemon"
+edition = "2021"
+license = "MIT"
+
+[lib]
+# The `_lib` suffix may seem redundant but it is necessary
+# to make the lib name unique and wouldn't conflict with the bin name.
+# This seems to be only an issue on Windows, see https://github.com/rust-lang/cargo/issues/8519
+name = "fand_gui_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+fand-proto = { path = "../../crates/fand-proto" }
+tauri = { version = "2", features = [] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"

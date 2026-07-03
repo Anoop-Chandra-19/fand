@@ -6,6 +6,11 @@ members = [
     "crates/fand",
     "crates/fanctl",
 ]
+# The Tauri backend is deliberately NOT a workspace member: it pulls in
+# hundreds of GUI crates, which would slow every daemon-side
+# `cargo test/clippy --workspace` to a crawl. It lives in its own tree
+# under gui/src-tauri and depends on fand-proto by path.
+exclude = ["gui/src-tauri"]
 
 [workspace.package]
 version = "0.1.0"

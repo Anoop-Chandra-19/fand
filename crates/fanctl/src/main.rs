@@ -1,14 +1,14 @@
 //! fanctl — unprivileged CLI client for the fand daemon (user must be in
 //! the `fand` group). Speaks fand-proto over the daemon's Unix socket.
 
-use std::io::{BufRead, BufReader, ErrorKind, Write};
-use std::os::unix::net::UnixStream;
+use std::io::ErrorKind;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
 use anyhow::{anyhow, bail, Context, Result};
 use clap::{Parser, Subcommand};
-use fand_proto::{Command, Request, Response, ResponseData, Status, SOCKET_PATH};
+use fand_proto::client::Client;
+use fand_proto::{Command, Status, SOCKET_PATH};
 
 #[derive(Parser)]
 #[command(name = "fanctl", version, about = "inspect and control the fand daemon")]
@@ -101,25 +101,20 @@ fn main() -> ExitCode {
 }
 
 fn status(socket: &Path) -> Result<()> {
-    let mut stream = connect(socket)?;
-    send(&mut stream, &Request::new(Command::GetStatus))?;
-    let mut reader = BufReader::new(stream);
-    let status = read_status(&mut reader)?;
+    let status = connect(socket)?.get_status()?;
     print_status(&status);
     Ok(())
 }
 
 fn watch(socket: &Path) -> Result<()> {
-    let mut stream = connect(socket)?;
-    send(&mut stream, &Request::new(Command::SubscribeStatus))?;
-    let mut reader = BufReader::new(stream);
-    loop {
-        let status = read_status(&mut reader)?;
+    for frame in connect(socket)?.subscribe()? {
+        let status = frame?;
         // Clear screen + move cursor home, then redraw.
         print!("\x1b[2J\x1b[H");
         print_status(&status);
         println!("\nlive — Ctrl-C to quit");
     }
+    Ok(())
 }
 
 fn override_cmd(
@@ -129,30 +124,28 @@ fn override_cmd(
     ttl: u64,
     clear: bool,
 ) -> Result<()> {
-    let (request, done_msg) = if clear {
+    let (cmd, done_msg) = if clear {
         (
-            Request::new(Command::ClearOverride {
+            Command::ClearOverride {
                 channel: channel.to_string(),
-            }),
+            },
             format!("{channel}: override cleared — back to curve"),
         )
     } else {
         let pwm = parse_pwm(value.expect("clap requires a value unless --clear"))?;
         (
-            Request::new(Command::SetOverride {
+            Command::SetOverride {
                 channel: channel.to_string(),
                 pwm,
                 ttl_seconds: ttl,
-            }),
+            },
             format!(
                 "{channel}: pinned at pwm {pwm} ({}) for {ttl}s",
                 duty_percent(pwm)
             ),
         )
     };
-    let mut stream = connect(socket)?;
-    send(&mut stream, &request)?;
-    expect_ok(&mut BufReader::new(stream))?;
+    connect(socket)?.request(cmd)?;
     println!("{done_msg}");
     Ok(())
 }
@@ -163,9 +156,7 @@ fn config_show(socket: &Path) -> Result<()> {
 }
 
 fn config_reload(socket: &Path) -> Result<()> {
-    let mut stream = connect(socket)?;
-    send(&mut stream, &Request::new(Command::ReloadConfig))?;
-    expect_ok(&mut BufReader::new(stream))?;
+    connect(socket)?.request(Command::ReloadConfig)?;
     println!("config reloaded and applied");
     Ok(())
 }
@@ -188,9 +179,7 @@ fn config_edit(socket: &Path) -> Result<()> {
         }
         match fand_core::Config::from_toml_str(&edited) {
             Ok(_) => {
-                let mut stream = connect(socket)?;
-                send(&mut stream, &Request::new(Command::SetConfig { toml: edited }))?;
-                expect_ok(&mut BufReader::new(stream))?;
+                connect(socket)?.request(Command::SetConfig { toml: edited })?;
                 println!("config applied and persisted");
                 return Ok(());
             }
@@ -266,9 +255,7 @@ fn curve_set(socket: &Path, name: &str, point_args: &[String]) -> Result<()> {
     // Instant local feedback; the daemon re-validates anyway.
     fand_core::Config::from_toml_str(&updated)
         .map_err(|e| anyhow!("resulting config would be invalid: {e}"))?;
-    let mut stream = connect(socket)?;
-    send(&mut stream, &Request::new(Command::SetConfig { toml: updated }))?;
-    expect_ok(&mut BufReader::new(stream))?;
+    connect(socket)?.request(Command::SetConfig { toml: updated })?;
     println!(
         "curve `{name}` set to {} point(s), applied and persisted",
         points.len()
@@ -320,12 +307,7 @@ fn replace_curve_points(toml_text: &str, name: &str, points: &[(i32, u8)]) -> Re
 }
 
 fn fetch_config(socket: &Path) -> Result<String> {
-    let mut stream = connect(socket)?;
-    send(&mut stream, &Request::new(Command::GetConfig))?;
-    match read_response(&mut BufReader::new(stream))?.data {
-        Some(ResponseData::Config { toml }) => Ok(toml),
-        other => bail!("daemon sent unexpected payload: {other:?}"),
-    }
+    Ok(connect(socket)?.get_config()?)
 }
 
 /// Accept a raw PWM (`140`) or a duty percentage (`55%`) — the wire always
@@ -351,8 +333,8 @@ fn parse_pwm(s: &str) -> Result<u8> {
     }
 }
 
-fn connect(socket: &Path) -> Result<UnixStream> {
-    UnixStream::connect(socket).map_err(|e| {
+fn connect(socket: &Path) -> Result<Client> {
+    Client::connect(socket).map_err(|e| {
         let hint = match e.kind() {
             ErrorKind::NotFound | ErrorKind::ConnectionRefused => {
                 "\nis fand running? (systemctl status fand)"
@@ -364,43 +346,6 @@ fn connect(socket: &Path) -> Result<UnixStream> {
         };
         anyhow!("connecting to {}: {e}{hint}", socket.display())
     })
-}
-
-fn send(stream: &mut UnixStream, request: &Request) -> Result<()> {
-    let mut line = serde_json::to_string(request)?;
-    line.push('\n');
-    stream.write_all(line.as_bytes()).context("sending request")
-}
-
-/// Read one response line; a daemon-side error becomes our error.
-fn read_response(reader: &mut BufReader<UnixStream>) -> Result<Response> {
-    let mut line = String::new();
-    let n = reader.read_line(&mut line).context("reading response")?;
-    if n == 0 {
-        bail!("connection closed by daemon");
-    }
-    let response: Response =
-        serde_json::from_str(&line).with_context(|| format!("bad response: {}", line.trim()))?;
-    if !response.ok {
-        bail!(
-            "daemon: {}",
-            response.error.unwrap_or_else(|| "unknown error".to_string())
-        );
-    }
-    Ok(response)
-}
-
-/// For commands whose success carries no payload.
-fn expect_ok(reader: &mut BufReader<UnixStream>) -> Result<()> {
-    read_response(reader).map(|_| ())
-}
-
-fn read_status(reader: &mut BufReader<UnixStream>) -> Result<Status> {
-    match read_response(reader)?.data {
-        Some(ResponseData::Status(status)) => Ok(status),
-        Some(other) => bail!("daemon sent unexpected payload: {other:?}"),
-        None => bail!("daemon sent ok response without data"),
-    }
 }
 
 fn print_status(status: &Status) {

@@ -11,6 +11,8 @@ use std::collections::BTreeMap;
 
 use serde::{Deserialize, Serialize};
 
+pub mod client;
+
 /// Protocol version stamped into every message.
 pub const PROTOCOL_VERSION: u32 = 1;
 
