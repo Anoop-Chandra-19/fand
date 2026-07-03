@@ -251,11 +251,19 @@ fn curve_set(socket: &Path, name: &str, point_args: &[String]) -> Result<()> {
         .map(|s| parse_point(s))
         .collect::<Result<Vec<_>>>()?;
     let current = fetch_config(socket)?;
-    let updated = replace_curve_points(&current, name, &points)?;
+    let is_new = !fand_core::Config::from_toml_str(&current)
+        .map_err(|e| anyhow!("daemon sent a config that does not validate: {e}"))?
+        .curves
+        .contains_key(name);
+    let updated = fand_core::replace_curve_points(&current, name, &points)
+        .context("editing curve points")?;
     // Instant local feedback; the daemon re-validates anyway.
     fand_core::Config::from_toml_str(&updated)
         .map_err(|e| anyhow!("resulting config would be invalid: {e}"))?;
     connect(socket)?.request(Command::SetConfig { toml: updated })?;
+    if is_new {
+        eprintln!("note: curve `{name}` did not exist — creating it (assign it to a channel to take effect)");
+    }
     println!(
         "curve `{name}` set to {} point(s), applied and persisted",
         points.len()
@@ -272,38 +280,6 @@ fn parse_point(s: &str) -> Result<(i32, u8)> {
         .parse()
         .with_context(|| format!("bad temperature in `{s}`"))?;
     Ok((temp, parse_pwm(pwm)?))
-}
-
-/// Surgically replace `[curves.<name>].points` in the TOML text, keeping
-/// every comment and all formatting elsewhere intact (why this uses
-/// toml_edit rather than a parse/re-serialize round trip).
-fn replace_curve_points(toml_text: &str, name: &str, points: &[(i32, u8)]) -> Result<String> {
-    let mut doc: toml_edit::DocumentMut =
-        toml_text.parse().context("parsing current config")?;
-    let curves = doc
-        .entry("curves")
-        .or_insert(toml_edit::Item::Table(toml_edit::Table::new()))
-        .as_table_mut()
-        .context("[curves] is not a table")?;
-    let is_new = !curves.contains_key(name);
-    let curve = curves
-        .entry(name)
-        .or_insert(toml_edit::Item::Table(toml_edit::Table::new()))
-        .as_table_mut()
-        .with_context(|| format!("[curves.{name}] is not a table"))?;
-
-    let mut arr = toml_edit::Array::new();
-    for &(temp, pwm) in points {
-        let mut pair = toml_edit::Array::new();
-        pair.push(i64::from(temp));
-        pair.push(i64::from(pwm));
-        arr.push(toml_edit::Value::Array(pair));
-    }
-    curve["points"] = toml_edit::value(arr);
-    if is_new {
-        eprintln!("note: curve `{name}` did not exist — creating it (assign it to a channel to take effect)");
-    }
-    Ok(doc.to_string())
 }
 
 fn fetch_config(socket: &Path) -> Result<String> {
@@ -411,34 +387,6 @@ mod tests {
         assert!(parse_point("40").is_err());
         assert!(parse_point("hot:80").is_err());
         assert!(parse_point("40:300").is_err());
-    }
-
-    #[test]
-    fn replace_curve_points_keeps_comments() {
-        let toml = "\
-# top comment stays
-[curves.cpu]
-# curve comment stays
-points = [[40, 80], [70, 200]]
-
-[curves.gpu]
-points = [[35, 70], [80, 255]] # trailing comment stays
-";
-        let out = super::replace_curve_points(toml, "cpu", &[(30, 70), (60, 140), (85, 255)])
-            .unwrap();
-        assert!(out.contains("# top comment stays"));
-        assert!(out.contains("# curve comment stays"));
-        assert!(out.contains("# trailing comment stays"));
-        assert!(out.contains("points = [[30, 70], [60, 140], [85, 255]]"));
-        assert!(out.contains("[[35, 70], [80, 255]]"), "other curve untouched");
-    }
-
-    #[test]
-    fn replace_curve_points_can_create_a_curve() {
-        let toml = "[curves.cpu]\npoints = [[40, 80], [70, 200]]\n";
-        let out = super::replace_curve_points(toml, "case", &[(30, 70), (80, 255)]).unwrap();
-        assert!(out.contains("[curves.case]"));
-        assert!(out.contains("points = [[30, 70], [80, 255]]"));
     }
 
     #[test]
