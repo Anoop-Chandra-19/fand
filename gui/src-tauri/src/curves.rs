@@ -78,16 +78,21 @@ pub(crate) fn payload_from_config(cfg: &fand_core::Config) -> CurveEditorPayload
     }
 }
 
-/// Validates an edited config, sends it to the daemon, and returns the
-/// fresh daemon-confirmed payload — shared by every write command here and
-/// in `policy.rs` so none of them have to repeat the validate/send/refetch
-/// sequence.
-pub(crate) fn apply(updated: String, client: &mut Client) -> Result<CurveEditorPayload, String> {
+/// Validates an edited config and sends it to the daemon, returning the
+/// fresh daemon-confirmed `Config` — shared by every write command across
+/// `curves.rs`, `policy.rs`, and `settings.rs` so none of them have to
+/// repeat the validate/send sequence, even though each builds a different
+/// payload shape from the result.
+pub(crate) fn apply_config(updated: String, client: &mut Client) -> Result<fand_core::Config, String> {
     let cfg = fand_core::Config::from_toml_str(&updated).map_err(|e| e.to_string())?;
     client
         .request(Command::SetConfig { toml: updated })
         .map_err(|e| e.to_string())?;
-    Ok(payload_from_config(&cfg))
+    Ok(cfg)
+}
+
+pub(crate) fn apply(updated: String, client: &mut Client) -> Result<CurveEditorPayload, String> {
+    apply_config(updated, client).map(|cfg| payload_from_config(&cfg))
 }
 
 #[tauri::command]

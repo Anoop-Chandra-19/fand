@@ -2,6 +2,8 @@ import { useState } from "react";
 import { useDaemonStatus } from "./daemon/useDaemonStatus";
 import { useCurveEditor } from "./curves/useCurveEditor";
 import { CurvesPage } from "./curves/CurvesPage";
+import { useChannelSettings } from "./settings/useChannelSettings";
+import { SettingsPage } from "./settings/SettingsPage";
 import { ChannelCard } from "./dashboard/ChannelCard";
 import { TempChart } from "./dashboard/TempChart";
 import { Sidebar, type Page } from "./nav/Sidebar";
@@ -23,6 +25,12 @@ function App() {
     addMixInput,
     removeMixInput,
   } = useCurveEditor();
+  const {
+    data: settingsData,
+    setMinPwm,
+    setSmoothingSeconds,
+    setZeroRpm,
+  } = useChannelSettings();
   const curveNames = curveData ? Object.keys(curveData.curves) : [];
   const [page, setPage] = useState<Page>("overview");
 
@@ -83,6 +91,16 @@ function App() {
               temps={latest?.temps ?? {}}
               setCurvePoints={setCurvePoints}
               deleteCurve={deleteCurve}
+            />
+          )}
+
+          {page === "settings" && (
+            <SettingsPage
+              data={settingsData}
+              labels={CHANNEL_LABELS}
+              setMinPwm={setMinPwm}
+              setSmoothingSeconds={setSmoothingSeconds}
+              setZeroRpm={setZeroRpm}
             />
           )}
         </main>

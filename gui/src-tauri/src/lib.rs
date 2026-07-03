@@ -8,6 +8,7 @@
 
 mod curves;
 mod policy;
+mod settings;
 
 use std::path::PathBuf;
 use std::time::Duration;
@@ -63,7 +64,11 @@ pub fn run() {
             curves::delete_curve,
             policy::set_channel_curve,
             policy::add_mix_input,
-            policy::remove_mix_input
+            policy::remove_mix_input,
+            settings::get_channel_settings,
+            settings::set_min_pwm,
+            settings::set_smoothing_seconds,
+            settings::set_zero_rpm
         ])
         .setup(|app| {
             let handle = app.handle().clone();

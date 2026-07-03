@@ -8,6 +8,7 @@
 //! sensor temps → RollingAverage → Curve::eval / mix::eval_max → Ramp::step → pwm
 //! ```
 
+pub mod channel_edit;
 pub mod config;
 pub mod curve;
 pub mod curve_edit;
@@ -16,6 +17,7 @@ pub mod policy_edit;
 pub mod ramp;
 pub mod smoothing;
 
+pub use channel_edit::{set_min_pwm, set_smoothing_seconds, set_zero_rpm, ChannelEditError};
 pub use config::{Config, ConfigError, ValidationError, MIN_PWM_FLOOR};
 pub use curve::{Curve, CurveError};
 pub use curve_edit::{remove_curve, replace_curve_points, CurveEditError};

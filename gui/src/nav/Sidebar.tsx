@@ -1,6 +1,6 @@
 import type { ComponentType } from "react";
 
-export type Page = "overview" | "curves";
+export type Page = "overview" | "curves" | "settings";
 
 interface Props {
   page: Page;
@@ -37,9 +37,25 @@ function CurvesIcon() {
   );
 }
 
+// Three sliders at different positions — mirrors the settings page's own
+// per-channel min_pwm/smoothing/zero_rpm rows, not a generic gear.
+function SettingsIcon() {
+  return (
+    <svg width="16" height="16" viewBox="0 0 16 16" fill="none" aria-hidden="true">
+      <line x1="2" y1="3.5" x2="14" y2="3.5" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round" />
+      <circle cx="10" cy="3.5" r="1.6" fill="currentColor" />
+      <line x1="2" y1="8" x2="14" y2="8" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round" />
+      <circle cx="5.5" cy="8" r="1.6" fill="currentColor" />
+      <line x1="2" y1="12.5" x2="14" y2="12.5" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round" />
+      <circle cx="8.5" cy="12.5" r="1.6" fill="currentColor" />
+    </svg>
+  );
+}
+
 const ITEMS: { page: Page; label: string; icon: ComponentType }[] = [
   { page: "overview", label: "Overview", icon: OverviewIcon },
   { page: "curves", label: "Curves", icon: CurvesIcon },
+  { page: "settings", label: "Settings", icon: SettingsIcon },
 ];
 
 export function Sidebar({ page, onChange }: Props) {

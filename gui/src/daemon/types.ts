@@ -48,3 +48,14 @@ export interface CurveEditorPayload {
   /** Already-configured sensor names, for the "add mix input" picker. */
   sensors: string[];
 }
+
+// Mirrors gui/src-tauri/src/settings.rs's ChannelSettings.
+export interface ChannelSettings {
+  min_pwm: number;
+  smoothing_seconds: number;
+  zero_rpm: boolean;
+  kick_pwm: number | null;
+  kick_seconds: number | null;
+}
+
+export type ChannelSettingsPayload = Record<string, ChannelSettings>;
