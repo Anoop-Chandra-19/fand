@@ -9,6 +9,9 @@ ExecStopPost=/usr/local/bin/fand --restore-auto
 Restart=on-failure
 RestartSec=2
 
+# Group=fand makes /run/fand owned root:fand, so 0750 lets group members
+# reach the socket (which the daemon itself sets to 0660).
+Group=fand
 RuntimeDirectory=fand
 RuntimeDirectoryMode=0750
 ProtectSystem=strict

@@ -17,7 +17,9 @@ use std::time::Duration;
 use anyhow::{bail, Context, Result};
 use fand_core::config::{Policy, SensorConfig};
 use fand_core::{mix, window_ticks, Config, Curve, Kick, Ramp, RampConfig, RollingAverage};
+use fand_proto::{ChannelStatus, Status};
 
+use crate::hub::StatusHub;
 use crate::hwmon::HwmonDevice;
 use crate::nvml::Gpu;
 
@@ -235,15 +237,19 @@ impl Engine {
         Ok(())
     }
 
-    /// Tick until `shutdown` is set (SIGTERM/SIGINT). On any tick error:
-    /// fans to full, then propagate — the caller's guard restores auto.
-    pub fn run(&mut self, shutdown: &AtomicBool) -> Result<()> {
+    /// Tick until `shutdown` is set (SIGTERM/SIGINT), publishing a status
+    /// snapshot to `hub` each tick. On any tick error: fans to full, then
+    /// propagate — the caller's guard restores auto.
+    pub fn run(&mut self, shutdown: &AtomicBool, hub: &StatusHub) -> Result<()> {
         while !shutdown.load(Ordering::Relaxed) {
-            if let Err(e) = self.tick_once() {
-                self.failsafe();
-                return Err(e.context(
-                    "control tick failed — drove fans to full; firmware auto restored on exit",
-                ));
+            match self.tick_once() {
+                Ok(status) => hub.publish(status),
+                Err(e) => {
+                    self.failsafe();
+                    return Err(e.context(
+                        "control tick failed — drove fans to full; firmware auto restored on exit",
+                    ));
+                }
             }
             sleep_interruptible(self.tick, shutdown);
         }
@@ -251,8 +257,9 @@ impl Engine {
         Ok(())
     }
 
-    fn tick_once(&mut self) -> Result<()> {
+    fn tick_once(&mut self) -> Result<Status> {
         let temps = read_temps(&self.sensors, &self.devices, self.gpu.as_ref())?;
+        let mut channel_status = BTreeMap::new();
         for ch in &mut self.channels {
             let mut evals = Vec::with_capacity(ch.inputs.len());
             for input in &mut ch.inputs {
@@ -277,8 +284,24 @@ impl Engine {
                 }
                 ch.last_written = Some(pwm);
             }
+
+            let rpm = self.devices[&ch.hwmon_name]
+                .read_fan_rpm(ch.pwm_index)
+                .with_context(|| format!("channel `{}`: reading rpm", ch.name))?;
+            channel_status.insert(
+                ch.name.clone(),
+                ChannelStatus {
+                    rpm,
+                    current_pwm: pwm,
+                    target_pwm: raw_target,
+                    mode: "manual".to_string(),
+                },
+            );
         }
-        Ok(())
+        Ok(Status {
+            temps,
+            channels: channel_status,
+        })
     }
 
     /// Best effort: full duty on every controlled channel. Restoring
@@ -433,6 +456,19 @@ mod tests {
         // firmware pwm 128 and 136 is within one max_step_up.
         e.tick_once().unwrap();
         assert_eq!(read(&root, "pwm2"), "136");
+    }
+
+    #[test]
+    fn tick_reports_status() {
+        let root = fake_sysfs();
+        let mut e = engine(&root);
+        let status = e.tick_once().unwrap();
+        assert_eq!(status.temps["cpu"], 54.0);
+        let ch = &status.channels["pwm2"];
+        assert_eq!(ch.rpm, 789);
+        assert_eq!(ch.current_pwm, 136);
+        assert_eq!(ch.target_pwm, 136);
+        assert_eq!(ch.mode, "manual");
     }
 
     #[test]

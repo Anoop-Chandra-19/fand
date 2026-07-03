@@ -13,8 +13,10 @@
 
 mod engine;
 mod failsafe;
+mod hub;
 mod hwmon;
 mod nvml;
+mod server;
 
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
@@ -48,8 +50,13 @@ struct Args {
     restore_auto: bool,
 
     /// Run the control loop but log decisions instead of writing to hardware
+    /// (combine with --socket to test fanctl without root)
     #[arg(long)]
     dry_run: bool,
+
+    /// Unix socket path for fanctl/GUI clients
+    #[arg(long, default_value = fand_proto::SOCKET_PATH)]
+    socket: PathBuf,
 }
 
 fn main() -> ExitCode {
@@ -99,8 +106,12 @@ fn run(args: &Args) -> Result<()> {
         Some(failsafe::FailsafeGuard::new(paths))
     };
 
+    let hub = Arc::new(hub::StatusHub::default());
+    let (listener, _socket_cleanup) = server::bind(&args.socket)?;
+    server::spawn(listener, Arc::clone(&hub));
+
     engine.take_control()?;
-    engine.run(&shutdown)
+    engine.run(&shutdown, &hub)
 }
 
 /// Standalone cleanup for systemd ExecStopPost: write pwmN_enable = 5 to
