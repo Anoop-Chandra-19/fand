@@ -31,5 +31,9 @@
     font-size: 15px; /* GNOME body text ≈ 11 pt */
     font-synthesis: none;
     text-rendering: optimizeLegibility;
+    /* This app is always dark, never follows the OS toggle — without this,
+       native controls (select, scrollbar) render in light mode regardless
+       of our own colors, clashing hard against every dark surface. */
+    color-scheme: dark;
   }
 }

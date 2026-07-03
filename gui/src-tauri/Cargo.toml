@@ -16,6 +16,7 @@ crate-type = ["staticlib", "cdylib", "rlib"]
 tauri-build = { version = "2", features = [] }
 
 [dependencies]
+fand-core = { path = "../../crates/fand-core" }
 fand-proto = { path = "../../crates/fand-proto" }
 tauri = { version = "2", features = [] }
 serde = { version = "1", features = ["derive"] }

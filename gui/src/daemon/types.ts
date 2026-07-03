@@ -24,3 +24,27 @@ export interface Sample {
 export function dutyPercent(pwm: number): number {
   return Math.round((pwm * 100) / 255);
 }
+
+// Mirrors gui/src-tauri/src/curves.rs's CurveEditorPayload.
+
+/** A `(temp_c, pwm)` point, sorted by temp, linear interpolation between. */
+export type CurvePoint = [number, number];
+
+export interface CurveRef {
+  sensor: string;
+  curve: string;
+}
+
+export interface ChannelCurveRefs {
+  /** One entry for a `single` policy, one per input for `mix`. */
+  refs: CurveRef[];
+  /** Distinguishes the two shapes even when refs.length === 1 for both. */
+  is_mix: boolean;
+}
+
+export interface CurveEditorPayload {
+  curves: Record<string, CurvePoint[]>;
+  channels: Record<string, ChannelCurveRefs>;
+  /** Already-configured sensor names, for the "add mix input" picker. */
+  sensors: string[];
+}

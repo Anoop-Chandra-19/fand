@@ -1,6 +1,10 @@
+import { useState } from "react";
 import { useDaemonStatus } from "./daemon/useDaemonStatus";
+import { useCurveEditor } from "./curves/useCurveEditor";
+import { CurvesPage } from "./curves/CurvesPage";
 import { ChannelCard } from "./dashboard/ChannelCard";
 import { TempChart } from "./dashboard/TempChart";
+import { Sidebar, type Page } from "./nav/Sidebar";
 
 // Friendly names for the channels on this machine; unknown channels fall
 // back to their raw pwmN name.
@@ -11,6 +15,16 @@ const CHANNEL_LABELS: Record<string, string> = {
 
 function App() {
   const { connected, latest, history } = useDaemonStatus();
+  const {
+    data: curveData,
+    setCurvePoints,
+    deleteCurve,
+    setChannelCurve,
+    addMixInput,
+    removeMixInput,
+  } = useCurveEditor();
+  const curveNames = curveData ? Object.keys(curveData.curves) : [];
+  const [page, setPage] = useState<Page>("overview");
 
   return (
     <div className="flex min-h-screen flex-col">
@@ -23,36 +37,56 @@ function App() {
         </div>
       )}
 
-      <main className="mx-auto flex w-full max-w-[1080px] flex-col gap-6 px-5 py-5">
-        {latest ? (
-          <>
-            <section>
-              <h2 className="mb-2.5 font-bold">Temperatures</h2>
-              <div className="rounded-xl bg-card px-4 pt-4 pb-2">
-                <TempChart history={history} />
-              </div>
-            </section>
-            <section>
-              <h2 className="mb-2.5 font-bold">Fans</h2>
-              <div className="grid grid-cols-[repeat(auto-fit,minmax(300px,1fr))] gap-4">
-                {Object.entries(latest.channels).map(([name, channel]) => (
-                  <ChannelCard
-                    key={name}
-                    name={name}
-                    label={CHANNEL_LABELS[name]}
-                    channel={channel}
-                    history={history}
-                  />
-                ))}
-              </div>
-            </section>
-          </>
-        ) : (
-          <p className="py-12 text-center text-dim">
-            Waiting for the first status frame…
-          </p>
-        )}
-      </main>
+      <div className="flex flex-1">
+        <Sidebar page={page} onChange={setPage} />
+
+        <main className="mx-auto flex w-full max-w-[1080px] flex-col gap-6 px-5 py-5">
+          {page === "overview" &&
+            (latest ? (
+              <>
+                <section>
+                  <h2 className="mb-2.5 font-bold">Temperatures</h2>
+                  <div className="rounded-xl bg-card px-4 pt-4 pb-2">
+                    <TempChart history={history} />
+                  </div>
+                </section>
+                <section>
+                  <h2 className="mb-2.5 font-bold">Fans</h2>
+                  <div className="grid grid-cols-[repeat(auto-fit,minmax(300px,1fr))] gap-4">
+                    {Object.entries(latest.channels).map(([name, channel]) => (
+                      <ChannelCard
+                        key={name}
+                        name={name}
+                        label={CHANNEL_LABELS[name]}
+                        channel={channel}
+                        history={history}
+                        curveRefs={curveData?.channels[name]}
+                        curveNames={curveNames}
+                        sensors={curveData?.sensors}
+                        setChannelCurve={setChannelCurve}
+                        addMixInput={addMixInput}
+                        removeMixInput={removeMixInput}
+                      />
+                    ))}
+                  </div>
+                </section>
+              </>
+            ) : (
+              <p className="py-12 text-center text-dim">
+                Waiting for the first status frame…
+              </p>
+            ))}
+
+          {page === "curves" && (
+            <CurvesPage
+              data={curveData}
+              temps={latest?.temps ?? {}}
+              setCurvePoints={setCurvePoints}
+              deleteCurve={deleteCurve}
+            />
+          )}
+        </main>
+      </div>
     </div>
   );
 }

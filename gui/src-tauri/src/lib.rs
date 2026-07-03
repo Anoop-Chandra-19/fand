@@ -6,6 +6,9 @@
 //! failsafe exit, not running yet) it emits `daemon-down` once and quietly
 //! retries until the stream is back.
 
+mod curves;
+mod policy;
+
 use std::path::PathBuf;
 use std::time::Duration;
 
@@ -14,7 +17,7 @@ use tauri::{AppHandle, Emitter};
 
 const RECONNECT_DELAY: Duration = Duration::from_secs(2);
 
-fn socket_path() -> PathBuf {
+pub(crate) fn socket_path() -> PathBuf {
     std::env::var_os("FAND_SOCKET")
         .map(PathBuf::from)
         .unwrap_or_else(|| PathBuf::from(fand_proto::SOCKET_PATH))
@@ -50,7 +53,18 @@ fn status_pump(app: AppHandle) {
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    // App-defined commands aren't gated by capabilities/default.json's ACL
+    // (that only covers plugin permissions like core:*) — verified with a
+    // throwaway ping() command before wiring the real ones in.
     tauri::Builder::default()
+        .invoke_handler(tauri::generate_handler![
+            curves::get_curve_editor_data,
+            curves::set_curve_points,
+            curves::delete_curve,
+            policy::set_channel_curve,
+            policy::add_mix_input,
+            policy::remove_mix_input
+        ])
         .setup(|app| {
             let handle = app.handle().clone();
             std::thread::spawn(move || status_pump(handle));
