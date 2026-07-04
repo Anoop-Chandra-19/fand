@@ -21,6 +21,15 @@ device_index = 0
 kind = "graph"
 sensor = "cpu"
 points = [[40, 80], [60, 130], [75, 200], [85, 255]]
+# Optional input-side hysteresis (any graph curve). The temp feeding the
+# curve only moves after departing the last accepted value by the given
+# margin AND staying out for response_seconds — kills fan hunting on spiky
+# sensors like Tctl. Defaults: 0 / 0 / 0 (off). At the curve's endpoint
+# temps hysteresis is bypassed (ignore_hysteresis_at_extremes = true) so a
+# real spike still reaches full duty immediately.
+#hysteresis_up = 2.0        # °C rise needed to accept a higher temp
+#hysteresis_down = 3.0      # °C fall needed to accept a lower temp
+#response_seconds = 5       # change must persist this long
 
 [curves.cpu_case]
 kind = "graph"

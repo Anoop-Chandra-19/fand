@@ -12,11 +12,13 @@
 //! smoothers.
 
 use std::collections::BTreeMap;
+use std::time::Instant;
 
 use thiserror::Error;
 
 use crate::config::{CurveConfig, MixFunction};
 use crate::curve::{Curve, CurveError};
+use crate::hysteresis::InputFilter;
 use crate::smoothing::RollingAverage;
 
 /// Trees deeper than this can only come from an unvalidated config (cycles
@@ -50,6 +52,8 @@ pub enum CurveTree {
         sensor: String,
         curve: Curve,
         smoother: RollingAverage,
+        /// None when the curve's hysteresis knobs are all defaults.
+        filter: Option<InputFilter>,
     },
     Mix {
         function: MixFunction,
@@ -86,14 +90,19 @@ impl CurveTree {
             .get(name)
             .ok_or_else(|| TreeError::UnknownCurve(name.to_string()))?;
         match cfg {
-            CurveConfig::Graph(g) => Ok(CurveTree::Graph {
-                sensor: g.sensor.clone(),
-                curve: Curve::try_from(g).map_err(|source| TreeError::BadCurve {
+            CurveConfig::Graph(g) => {
+                let curve = Curve::try_from(g).map_err(|source| TreeError::BadCurve {
                     curve: name.to_string(),
                     source,
-                })?,
-                smoother: RollingAverage::new(smoothing_window),
-            }),
+                })?;
+                let filter = InputFilter::new(g, &curve);
+                Ok(CurveTree::Graph {
+                    sensor: g.sensor.clone(),
+                    curve,
+                    smoother: RollingAverage::new(smoothing_window),
+                    filter,
+                })
+            }
             CurveConfig::Mix(m) => {
                 let members = m
                     .curves
@@ -114,26 +123,34 @@ impl CurveTree {
         }
     }
 
-    /// One tick: push temps through each graph node's smoother, interpolate,
-    /// combine mix outputs. `&mut` because smoothing is stateful.
-    pub fn eval(&mut self, temps: &BTreeMap<String, f64>) -> Result<u8, EvalError> {
+    /// One tick: push temps through each graph node's smoother, gate through
+    /// its hysteresis filter, interpolate, combine mix outputs. `&mut`
+    /// because smoothing and hysteresis are stateful. `now` drives the
+    /// filters' response-time dwell.
+    pub fn eval(&mut self, temps: &BTreeMap<String, f64>, now: Instant) -> Result<u8, EvalError> {
         match self {
             CurveTree::Graph {
                 sensor,
                 curve,
                 smoother,
+                filter,
             } => {
                 let temp = *temps
                     .get(sensor.as_str())
                     .ok_or_else(|| EvalError::MissingSensor(sensor.clone()))?;
-                Ok(curve.eval(smoother.push(temp)))
+                let smoothed = smoother.push(temp);
+                let effective = match filter {
+                    Some(f) => f.apply(smoothed, now),
+                    None => smoothed,
+                };
+                Ok(curve.eval(effective))
             }
             CurveTree::Mix { function, members } => {
                 // Evaluate all members first (keeps every smoother warm),
                 // then combine. Validation guarantees at least one member.
                 let outputs = members
                     .iter_mut()
-                    .map(|m| m.eval(temps))
+                    .map(|m| m.eval(temps, now))
                     .collect::<Result<Vec<u8>, _>>()?;
                 Ok(match function {
                     MixFunction::Max => outputs.iter().copied().max().unwrap_or(0),
@@ -189,21 +206,21 @@ mod tests {
     fn graph_evaluates_at_own_sensor() {
         let curves = BTreeMap::from([("c".into(), graph("cpu", vec![(40, 80), (70, 200)]))]);
         let mut tree = CurveTree::build(&curves, "c", 1).unwrap();
-        assert_eq!(tree.eval(&temps(&[("cpu", 54.0)])).unwrap(), 136);
+        assert_eq!(tree.eval(&temps(&[("cpu", 54.0)]), Instant::now()).unwrap(), 136);
     }
 
     #[test]
     fn flat_is_constant() {
         let curves = BTreeMap::from([("f".into(), CurveConfig::Flat(FlatCurve { pwm: 128 }))]);
         let mut tree = CurveTree::build(&curves, "f", 1).unwrap();
-        assert_eq!(tree.eval(&temps(&[])).unwrap(), 128);
+        assert_eq!(tree.eval(&temps(&[]), Instant::now()).unwrap(), 128);
     }
 
     #[test]
     fn max_mix_takes_max_of_outputs() {
         // Gaming: CPU 62 °C → ~138, GPU 71 °C → ~224. GPU demand wins.
         let mut tree = CurveTree::build(&case_curves(), "case_mix", 1).unwrap();
-        let out = tree.eval(&temps(&[("cpu", 62.0), ("gpu", 71.0)])).unwrap();
+        let out = tree.eval(&temps(&[("cpu", 62.0), ("gpu", 71.0)]), Instant::now()).unwrap();
         assert_eq!(out, 224);
     }
 
@@ -218,7 +235,7 @@ mod tests {
             ("m".into(), mix(MixFunction::Max, &["relaxed", "steep"])),
         ]);
         let mut tree = CurveTree::build(&curves, "m", 1).unwrap();
-        let out = tree.eval(&temps(&[("cpu", 80.0), ("gpu", 60.0)])).unwrap();
+        let out = tree.eval(&temps(&[("cpu", 80.0), ("gpu", 60.0)]), Instant::now()).unwrap();
         // steep at 60 °C: 60 + (255-60) * 20/25 = 216; relaxed at 80: 92.
         assert_eq!(out, 216);
     }
@@ -231,13 +248,13 @@ mod tests {
         let t = temps(&[("cpu", 62.0), ("gpu", 71.0)]); // outputs 138 and 224
 
         let mut min_tree = CurveTree::build(&curves, "min_mix", 1).unwrap();
-        assert_eq!(min_tree.eval(&t).unwrap(), 138);
+        assert_eq!(min_tree.eval(&t, Instant::now()).unwrap(), 138);
 
         let mut avg_tree = CurveTree::build(&curves, "avg_mix", 1).unwrap();
-        assert_eq!(avg_tree.eval(&t).unwrap(), 181); // (138+224)/2 = 181
+        assert_eq!(avg_tree.eval(&t, Instant::now()).unwrap(), 181); // (138+224)/2 = 181
 
         let mut max_tree = CurveTree::build(&curves, "case_mix", 1).unwrap();
-        assert_eq!(max_tree.eval(&t).unwrap(), 224);
+        assert_eq!(max_tree.eval(&t, Instant::now()).unwrap(), 224);
     }
 
     #[test]
@@ -249,7 +266,7 @@ mod tests {
         let t = temps(&[("cpu", 50.0)]);
         let mut member = CurveTree::build(&curves, "c", 1).unwrap();
         let mut wrapped = CurveTree::build(&curves, "m", 1).unwrap();
-        assert_eq!(wrapped.eval(&t).unwrap(), member.eval(&t).unwrap());
+        assert_eq!(wrapped.eval(&t, Instant::now()).unwrap(), member.eval(&t, Instant::now()).unwrap());
     }
 
     #[test]
@@ -258,7 +275,7 @@ mod tests {
         curves.insert("outer".into(), mix(MixFunction::Min, &["case_mix", "cpu_case"]));
         let mut tree = CurveTree::build(&curves, "outer", 1).unwrap();
         // case_mix = max(138, 224) = 224; cpu_case = 138; min = 138.
-        assert_eq!(tree.eval(&temps(&[("cpu", 62.0), ("gpu", 71.0)])).unwrap(), 138);
+        assert_eq!(tree.eval(&temps(&[("cpu", 62.0), ("gpu", 71.0)]), Instant::now()).unwrap(), 138);
     }
 
     #[test]
@@ -266,10 +283,35 @@ mod tests {
         // Window of 2 ticks: the second eval must average with the first
         // sample on BOTH members, including the one that never wins.
         let mut tree = CurveTree::build(&case_curves(), "case_mix", 2).unwrap();
-        tree.eval(&temps(&[("cpu", 45.0), ("gpu", 71.0)])).unwrap();
-        let out = tree.eval(&temps(&[("cpu", 85.0), ("gpu", 71.0)])).unwrap();
-        // cpu smoothed to (45+85)/2 = 65 → 90 + 70*(20/25) = 146; gpu 224.
-        assert_eq!(out, 224.max(146));
+        tree.eval(&temps(&[("cpu", 45.0), ("gpu", 71.0)]), Instant::now()).unwrap();
+        let out = tree.eval(&temps(&[("cpu", 85.0), ("gpu", 71.0)]), Instant::now()).unwrap();
+        // cpu smoothed to (45+85)/2 = 65 → 90 + 70*(20/25) = 146; gpu 224
+        // wins the max — but only because the cpu member stayed warm at 146.
+        assert_eq!(out, 224);
+    }
+
+    #[test]
+    fn graph_hysteresis_holds_output_inside_band() {
+        let curves = BTreeMap::from([(
+            "c".into(),
+            CurveConfig::Graph(GraphCurve {
+                sensor: "cpu".into(),
+                points: vec![(40, 80), (70, 200)],
+                hysteresis_up: 3.0,
+                hysteresis_down: 3.0,
+                response_seconds: 0,
+                ignore_hysteresis_at_extremes: true,
+            }),
+        )]);
+        let mut tree = CurveTree::build(&curves, "c", 1).unwrap();
+        let now = Instant::now();
+        assert_eq!(tree.eval(&temps(&[("cpu", 54.0)]), now).unwrap(), 136);
+        // +1.5 °C is inside the band: output pinned to the accepted 54 °C.
+        assert_eq!(tree.eval(&temps(&[("cpu", 55.5)]), now).unwrap(), 136);
+        // +4 °C clears hysteresis_up: curve sees 58 °C → 152.
+        assert_eq!(tree.eval(&temps(&[("cpu", 58.0)]), now).unwrap(), 152);
+        // Beyond the last point the bypass wins immediately even mid-band.
+        assert_eq!(tree.eval(&temps(&[("cpu", 71.0)]), now).unwrap(), 200);
     }
 
     #[test]
@@ -286,7 +328,7 @@ mod tests {
         let curves = BTreeMap::from([("c".into(), graph("cpu", vec![(40, 80), (70, 200)]))]);
         let mut tree = CurveTree::build(&curves, "c", 1).unwrap();
         assert_eq!(
-            tree.eval(&temps(&[("gpu", 50.0)])),
+            tree.eval(&temps(&[("gpu", 50.0)]), Instant::now()),
             Err(EvalError::MissingSensor("cpu".into()))
         );
     }

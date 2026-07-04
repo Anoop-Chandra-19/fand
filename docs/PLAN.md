@@ -103,7 +103,9 @@ temperature source; a **channel** binds exactly one curve by name. Curve kinds:
 
 - **graph**: sorted `(temp_c, pwm)` points evaluated at the curve's own
   sensor; linear interpolation between points, clamped at ends. Also carries
-  per-curve input hysteresis fields (parsed since phase 7, inert until 8a).
+  per-curve input hysteresis (active since phase 8a): the temp feeding the
+  curve moves only after departing the accepted value by hysteresis_up/down
+  °C for response_seconds, bypassed at curve endpoints by default.
 - **mix**: combines other curves' **outputs** with `max` (default) / `min` /
   `average`. → pwm2 (case): max of (cpu_case, gpu_case). Deliberately
   max-of-outputs, NOT one curve fed max-temp — 70 °C means different things

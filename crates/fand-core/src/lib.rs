@@ -13,6 +13,7 @@ pub mod config;
 pub mod curve;
 pub mod curve_edit;
 pub mod eval;
+pub mod hysteresis;
 pub mod ramp;
 pub mod smoothing;
 
@@ -26,5 +27,6 @@ pub use curve_edit::{
     set_graph_sensor, CurveEditError,
 };
 pub use eval::{CurveTree, EvalError, TreeError};
+pub use hysteresis::InputFilter;
 pub use ramp::{Kick, Ramp, RampConfig};
 pub use smoothing::{window_ticks, RollingAverage};

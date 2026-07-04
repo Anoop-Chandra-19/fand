@@ -91,8 +91,8 @@ pub enum CurveConfig {
 /// Points as written in TOML: whole-degree temps, pwm parsed wide (u16) so
 /// out-of-range values reach validation instead of a serde error.
 ///
-/// The hysteresis fields are parsed and validated but **inert until phase
-/// 8a** — the engine does not gate on them yet.
+/// The hysteresis fields feed `hysteresis::InputFilter`, which gates the
+/// smoothed temp before curve interpolation.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct GraphCurve {

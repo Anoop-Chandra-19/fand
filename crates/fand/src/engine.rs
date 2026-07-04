@@ -591,7 +591,7 @@ impl Engine {
             // the channel would do on its own.
             let raw_target = ch
                 .tree
-                .eval(&temps)
+                .eval(&temps, now)
                 .with_context(|| format!("channel `{}`", ch.name))?;
 
             let (ramp_target, mode, override_remaining_s) = match self.overrides.get(&ch.name) {
@@ -828,6 +828,53 @@ mod tests {
         assert_eq!(status.channels["pwm2"].target_pwm, 156);
         // Ramp starts at firmware pwm 128, limited to one max_step_up of 10.
         assert_eq!(read(&root, "pwm2"), "138");
+    }
+
+    /// TEST_CONFIG with a ±3 °C hysteresis band on the curve (no response
+    /// time — engine tests can't fast-forward the dwell clock).
+    fn hysteresis_config() -> String {
+        TEST_CONFIG.replace(
+            "points = [[40, 80], [70, 200]]",
+            "points = [[40, 80], [70, 200]]\n        hysteresis_up = 3.0\n        hysteresis_down = 3.0",
+        )
+    }
+
+    #[test]
+    fn hysteresis_holds_target_inside_band() {
+        let root = fake_sysfs();
+        let toml = hysteresis_config();
+        let cfg = Config::from_toml_str(&toml).unwrap();
+        let mut e = Engine::from_config(&cfg, &toml, root.path(), false).unwrap();
+        e.tick_once().unwrap(); // anchors the filter at 54 °C → 136
+        assert_eq!(read(&root, "pwm2"), "136");
+
+        // +1.5 °C stays inside the band: target and pwm unchanged.
+        fs::write(root.path().join("hwmon1/temp1_input"), "55500\n").unwrap();
+        let status = e.tick_once().unwrap();
+        assert_eq!(status.channels["pwm2"].target_pwm, 136);
+        assert_eq!(read(&root, "pwm2"), "136");
+
+        // +4 °C clears the band: curve sees 58 °C → target 152, ramp steps 10.
+        fs::write(root.path().join("hwmon1/temp1_input"), "58000\n").unwrap();
+        let status = e.tick_once().unwrap();
+        assert_eq!(status.channels["pwm2"].target_pwm, 152);
+        assert_eq!(read(&root, "pwm2"), "146");
+    }
+
+    #[test]
+    fn reload_resets_hysteresis_state() {
+        let root = fake_sysfs();
+        let toml = hysteresis_config();
+        let cfg = Config::from_toml_str(&toml).unwrap();
+        let mut e = Engine::from_config(&cfg, &toml, root.path(), false).unwrap();
+        e.tick_once().unwrap(); // anchored at 54 °C
+        fs::write(root.path().join("hwmon1/temp1_input"), "55500\n").unwrap();
+        assert_eq!(e.tick_once().unwrap().channels["pwm2"].target_pwm, 136, "held");
+
+        // Reload rebuilds the curve tree: the filter re-anchors at the
+        // current 55.5 °C instead of keeping the held 54 °C.
+        e.reload(&toml).unwrap();
+        assert_eq!(e.tick_once().unwrap().channels["pwm2"].target_pwm, 142);
     }
 
     #[test]

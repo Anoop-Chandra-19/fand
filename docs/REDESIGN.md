@@ -24,7 +24,7 @@ input = "temp1_input"
 kind = "graph"
 sensor = "cpu"
 points = [[40, 80], [60, 130], [75, 200], [85, 255]]
-hysteresis_up = 2.0                 # °C, input-side (phase 8a; ignored in 7)
+hysteresis_up = 2.0                 # °C, input-side (active since phase 8a)
 hysteresis_down = 3.0
 response_seconds = 1
 ignore_hysteresis_at_extremes = true
@@ -101,17 +101,23 @@ never silently replace it — GUI and fanctl must show the function explicitly
 
 ## Phase 8 — FanControl behaviors
 
-- **8a — input hysteresis + response time** (the flagship). New pure module
-  in `fand-core`: per-graph-curve state {last accepted temp, pending change
-  timestamp}; input recomputes only after moving ≥ hysteresis_up/down for ≥
-  response_seconds; bypass at curve endpoints when
-  `ignore_hysteresis_at_extremes`. Engine holds state per curve instance
-  across ticks; state resets on reload. Defaults conservative (0 = off, so
-  existing configs behave identically). Revisit per-channel
-  `smoothing_seconds`/`deadband` defaults once hysteresis proves out on
-  pwm2 — likely lower smoothing, keep deadband.
-  Tests: no output change within band; change accepted after dwell; down
-  slower than up; extremes bypass; reload resets cleanly.
+- **8a — input hysteresis + response time** (the flagship). ✅ code complete
+  2026-07-04 (not deployed — freeze holds). `fand-core/hysteresis.rs`:
+  `InputFilter` sits between each graph node's smoother and interpolation,
+  holding {accepted temp, pending excursion (direction, since)}; the curve's
+  input moves only after departing ≥ hysteresis_up/down °C for ≥
+  response_seconds (dwell restarts if the temp retreats into the band or
+  flips direction); bypassed at/beyond the curve's endpoint temps when
+  `ignore_hysteresis_at_extremes` (default true — a spike past the last
+  point hits full duty immediately). All-default knobs build no filter at
+  all, so existing configs behave identically. State lives in the per-
+  channel `CurveTree` and resets on reload. `CurveTree::eval` now takes the
+  tick's `Instant`. Revisit per-channel `smoothing_seconds`/`deadband`
+  defaults once hysteresis proves out on pwm2 — likely lower smoothing,
+  keep deadband.
+  Tests (all in): no output change within band; change accepted after dwell;
+  down slower than up; extremes bypass (and honored when disabled); dwell
+  reset on retreat/direction flip; reload resets; engine-level wiring.
 - **8b — trigger curve + per-channel offset.** Trigger: {idle_temp, idle_pwm,
   load_temp, load_pwm, response_seconds}, latches between thresholds.
   **Forbidden on pwm1** (same validation class as zero_rpm); idle_pwm below
