@@ -1,6 +1,6 @@
-//! Surgical edits to a channel's tuning knobs (`min_pwm`, `smoothing_seconds`,
-//! `zero_rpm` + kick params) in a config's raw TOML text — same `toml_edit`
-//! approach as [`crate::curve_edit`] and [`crate::policy_edit`], so every
+//! Surgical edits to a channel's tuning knobs (`curve` binding, `min_pwm`,
+//! `smoothing_seconds`, `zero_rpm` + kick params) in a config's raw TOML
+//! text — same `toml_edit` approach as [`crate::curve_edit`], so every
 //! comment and all formatting elsewhere survives untouched.
 //!
 //! Business rules (e.g. "zero_rpm requires kick_pwm and kick_seconds", the
@@ -31,6 +31,18 @@ fn channel_table<'a>(
         .ok_or_else(|| ChannelEditError::UnknownChannel(channel.to_string()))?
         .as_table_mut()
         .ok_or_else(|| ChannelEditError::ChannelNotATable(channel.to_string()))
+}
+
+/// Rebind which curve drives a channel.
+pub fn set_channel_curve(
+    toml_text: &str,
+    channel: &str,
+    curve: &str,
+) -> Result<String, ChannelEditError> {
+    let mut doc: DocumentMut = toml_text.parse()?;
+    let chan = channel_table(&mut doc, channel)?;
+    chan["curve"] = value(curve);
+    Ok(doc.to_string())
 }
 
 /// Set `min_pwm` on a channel.
@@ -88,8 +100,6 @@ mod tests {
 # pwm1 comment stays
 [channels.pwm1]
 hwmon_name = \"nct6799\"
-policy = \"single\"
-sensor = \"cpu\"
 curve = \"cpu_rad\"
 min_pwm = 80
 smoothing_seconds = 12
@@ -97,11 +107,26 @@ smoothing_seconds = 12
 # pwm2 comment stays
 [channels.pwm2]
 hwmon_name = \"nct6799\"
-policy = \"mix\"
-inputs = [{ sensor = \"cpu\", curve = \"cpu_case\" }, { sensor = \"gpu\", curve = \"gpu_case\" }]
+curve = \"case_mix\"
 min_pwm = 70
 smoothing_seconds = 5
 ";
+
+    #[test]
+    fn set_channel_curve_rebinds() {
+        let out = set_channel_curve(TOML, "pwm2", "cpu_rad").unwrap();
+        assert!(out.contains("# pwm2 comment stays"));
+        assert!(!out.contains("case_mix"));
+        assert_eq!(out.matches("curve = \"cpu_rad\"").count(), 2);
+    }
+
+    #[test]
+    fn set_channel_curve_rejects_unknown_channel() {
+        assert!(matches!(
+            set_channel_curve(TOML, "pwm9", "x"),
+            Err(ChannelEditError::UnknownChannel(c)) if c == "pwm9"
+        ));
+    }
 
     #[test]
     fn set_min_pwm_keeps_comments() {

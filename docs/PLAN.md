@@ -98,11 +98,17 @@ for each configured channel:
 
 ## 4. Curves and mix mode
 
-Config defines named **curves** (sorted lists of `(temp_c, pwm)` points, linear interpolation between points, clamped at ends) and **channels** referencing them.
+FanControl-style model (since phase 7, see REDESIGN.md): a **curve** owns its
+temperature source; a **channel** binds exactly one curve by name. Curve kinds:
 
-Channel policies:
-- **single**: one (sensor, curve) pair. → pwm1 (CPU radiator): sensor = k10temp, curve = "cpu".
-- **mix (max-of-outputs)**: list of (sensor, curve) pairs; evaluate *each curve at its own sensor's temp*, take the **max of resulting PWMs**. → pwm2 (case): [(cpu → cpu_case curve), (gpu → gpu_case curve)]. This is deliberately max-of-outputs, NOT one curve fed max-temp — 70 °C means different things per component.
+- **graph**: sorted `(temp_c, pwm)` points evaluated at the curve's own
+  sensor; linear interpolation between points, clamped at ends. Also carries
+  per-curve input hysteresis fields (parsed since phase 7, inert until 8a).
+- **mix**: combines other curves' **outputs** with `max` (default) / `min` /
+  `average`. → pwm2 (case): max of (cpu_case, gpu_case). Deliberately
+  max-of-outputs, NOT one curve fed max-temp — 70 °C means different things
+  per component. Cycles are rejected by validation.
+- **flat**: constant pwm.
 
 ### Example config sketch (TOML)
 
@@ -120,26 +126,34 @@ kind = "nvml"
 device_index = 0
 
 [curves.cpu_rad]
+kind = "graph"
+sensor = "cpu"
 points = [[40, 80], [60, 130], [75, 200], [85, 255]]
 
 [curves.cpu_case]
+kind = "graph"
+sensor = "cpu"
 points = [[45, 90], [70, 160], [85, 255]]
 
 [curves.gpu_case]
+kind = "graph"
+sensor = "gpu"
 points = [[45, 90], [60, 140], [75, 255]]
+
+[curves.case_mix]
+kind = "mix"
+function = "max"
+curves = ["cpu_case", "gpu_case"]
 
 [channels.pwm1]
 hwmon_name = "nct6799"
-policy = "single"
-sensor = "cpu"
 curve = "cpu_rad"
-min_pwm = 70
+min_pwm = 80
 smoothing_seconds = 12     # radiator thermal mass
 
 [channels.pwm2]
 hwmon_name = "nct6799"
-policy = "mix"
-inputs = [{ sensor = "cpu", curve = "cpu_case" }, { sensor = "gpu", curve = "gpu_case" }]
+curve = "case_mix"
 min_pwm = 70
 smoothing_seconds = 5
 zero_rpm = false           # opt-in; if true, requires kick_pwm + kick_seconds
@@ -225,6 +239,7 @@ WantedBy=multi-user.target
 4. **Socket server + fanctl status/watch** — first end-to-end payoff.
 5. **Config file + validation + hot reload + remaining fanctl commands.**
 6. **GUI**: dashboard first (read-only), then curve editor, then channel settings.
+7. –10. **Redesign** (FanControl curve model + native GNOME GUI): see REDESIGN.md.
 
 ## 10. Safety invariants (enforce in code review / tests)
 

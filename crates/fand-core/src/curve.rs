@@ -3,7 +3,7 @@
 
 use thiserror::Error;
 
-use crate::config::CurveConfig;
+use crate::config::GraphCurve;
 
 #[derive(Debug, Error, PartialEq, Eq)]
 pub enum CurveError {
@@ -64,10 +64,10 @@ impl Curve {
     }
 }
 
-impl TryFrom<&CurveConfig> for Curve {
+impl TryFrom<&GraphCurve> for Curve {
     type Error = CurveError;
 
-    fn try_from(cfg: &CurveConfig) -> Result<Self, CurveError> {
+    fn try_from(cfg: &GraphCurve) -> Result<Self, CurveError> {
         let points = cfg
             .points
             .iter()
@@ -149,22 +149,27 @@ mod tests {
         );
     }
 
+    fn graph(points: Vec<(i32, u16)>) -> GraphCurve {
+        GraphCurve {
+            sensor: "cpu".into(),
+            points,
+            hysteresis_up: 0.0,
+            hysteresis_down: 0.0,
+            response_seconds: 0,
+            ignore_hysteresis_at_extremes: true,
+        }
+    }
+
     #[test]
     fn builds_from_config() {
-        let cfg = CurveConfig {
-            points: vec![(40, 80), (60, 130)],
-        };
-        let c = Curve::try_from(&cfg).unwrap();
+        let c = Curve::try_from(&graph(vec![(40, 80), (60, 130)])).unwrap();
         assert_eq!(c.eval(50.0), 105);
     }
 
     #[test]
     fn config_pwm_out_of_range_rejected() {
-        let cfg = CurveConfig {
-            points: vec![(40, 300)],
-        };
         assert_eq!(
-            Curve::try_from(&cfg),
+            Curve::try_from(&graph(vec![(40, 300)])),
             Err(CurveError::PwmOutOfRange { index: 0, pwm: 300 })
         );
     }

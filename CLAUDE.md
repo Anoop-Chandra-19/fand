@@ -52,6 +52,13 @@ config at `/etc/fand/config.toml`.
   `fand --dry-run --socket /tmp/... ` + `fanctl --socket /tmp/...`.
 - Shipping a change: `cargo build --release && sudo scripts/install.sh &&
   sudo systemctl restart fand` (the user runs privileged commands himself).
+- **DEPLOYMENT FREEZE (2026-07-04):** the service runs a pre-redesign
+  snapshot with old-schema config; nothing ships until redesign phases
+  7–10 (docs/REDESIGN.md) are all done, then one cutover — swap
+  /etc/fand/config.toml for the migrated config *before* install.sh (its
+  `--check` runs against the kept config). Repo-built `fanctl curve`/GUI
+  config paths refuse the live daemon's old-schema config text — develop
+  against a dry-run daemon only.
 - Emergency hand-back at any time: `sudo fand --restore-auto`.
 - Health checkup: `systemctl status fand` (uptime/restarts/memory trend),
   `journalctl -u fand` (grep FAILSAFE / implausible / restore),

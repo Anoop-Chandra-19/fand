@@ -43,38 +43,52 @@ export function useCurveEditor() {
     [],
   );
 
-  /** Edits an existing curve, or creates one with these points if `name` is new. */
+  /** Replaces an existing graph curve's points. */
   const setCurvePoints = useCallback(
     (name: string, points: CurvePoint[]) => runWrite("set_curve_points", { name, points }),
     [runWrite],
   );
 
-  const deleteCurve = useCallback((name: string) => runWrite("delete_curve", { name }), [runWrite]);
+  /** Creates a new graph curve bound to `sensor`. */
+  const createGraphCurve = useCallback(
+    (name: string, sensor: string, points: CurvePoint[]) =>
+      runWrite("create_graph_curve", { name, sensor, points }),
+    [runWrite],
+  );
 
+  /** Rebinds which sensor drives a graph curve. */
+  const setGraphSensor = useCallback(
+    (name: string, sensor: string) => runWrite("set_graph_sensor", { name, sensor }),
+    [runWrite],
+  );
+
+  const addMixMember = useCallback(
+    (name: string, member: string) => runWrite("add_mix_member", { name, member }),
+    [runWrite],
+  );
+
+  const removeMixMember = useCallback(
+    (name: string, member: string) => runWrite("remove_mix_member", { name, member }),
+    [runWrite],
+  );
+
+  /** Rebinds which curve drives a channel. */
   const setChannelCurve = useCallback(
-    (channel: string, sensor: string, curve: string) =>
-      runWrite("set_channel_curve", { channel, sensor, curve }),
+    (channel: string, curve: string) => runWrite("set_channel_curve", { channel, curve }),
     [runWrite],
   );
 
-  const addMixInput = useCallback(
-    (channel: string, sensor: string, curve: string) =>
-      runWrite("add_mix_input", { channel, sensor, curve }),
-    [runWrite],
-  );
-
-  const removeMixInput = useCallback(
-    (channel: string, sensor: string) => runWrite("remove_mix_input", { channel, sensor }),
-    [runWrite],
-  );
+  const deleteCurve = useCallback((name: string) => runWrite("delete_curve", { name }), [runWrite]);
 
   return {
     data,
     error,
     setCurvePoints,
-    deleteCurve,
+    createGraphCurve,
+    setGraphSensor,
+    addMixMember,
+    removeMixMember,
     setChannelCurve,
-    addMixInput,
-    removeMixInput,
+    deleteCurve,
   };
 }

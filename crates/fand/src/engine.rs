@@ -1,7 +1,7 @@
 //! Startup wiring + the control loop. Per channel each tick:
 //!
 //! ```text
-//! sensor temps → RollingAverage → Curve::eval / mix::eval_max → Ramp::step → pwm write
+//! sensor temps → CurveTree::eval (smoothing + graph/mix/flat) → Ramp::step → pwm write
 //! ```
 //!
 //! Any tick error (sensor read failure, implausible reading, failed write)
@@ -16,8 +16,8 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use anyhow::{bail, Context, Result};
-use fand_core::config::{Policy, SensorConfig};
-use fand_core::{mix, window_ticks, Config, Curve, Kick, Ramp, RampConfig, RollingAverage};
+use fand_core::config::SensorConfig;
+use fand_core::{window_ticks, Config, CurveTree, Kick, Ramp, RampConfig};
 use fand_proto::{ChannelStatus, Command, Response, ResponseData, Status};
 
 use crate::failsafe::SharedPaths;
@@ -42,17 +42,13 @@ enum SensorSource {
     Nvml { device_index: u32 },
 }
 
-struct ChannelInput {
-    sensor: String,
-    curve: Curve,
-    smoother: RollingAverage,
-}
-
 struct Channel {
     name: String,
     hwmon_name: String,
     pwm_index: u32,
-    inputs: Vec<ChannelInput>,
+    /// The channel's bound curve, resolved into an owned tree (smoothing
+    /// state lives inside the graph nodes).
+    tree: CurveTree,
     ramp: Ramp,
     last_written: Option<u8>,
     /// Copied from config for override validation: the lowest PWM a client
@@ -178,26 +174,9 @@ impl Engine {
                 );
             }
 
-            let policy_inputs: Vec<(&String, &String)> = match &ch.policy {
-                Policy::Single { sensor, curve } => vec![(sensor, curve)],
-                Policy::Mix { inputs } => {
-                    inputs.iter().map(|i| (&i.sensor, &i.curve)).collect()
-                }
-            };
             let window = window_ticks(ch.smoothing_seconds, tick_seconds);
-            let mut inputs = Vec::new();
-            for (sensor, curve_name) in policy_inputs {
-                let curve_cfg = cfg
-                    .curves
-                    .get(curve_name)
-                    .with_context(|| format!("channel `{name}`: unknown curve `{curve_name}`"))?;
-                inputs.push(ChannelInput {
-                    sensor: sensor.clone(),
-                    curve: Curve::try_from(curve_cfg)
-                        .with_context(|| format!("curve `{curve_name}`"))?,
-                    smoother: RollingAverage::new(window),
-                });
-            }
+            let tree = CurveTree::build(&cfg.curves, &ch.curve, window)
+                .with_context(|| format!("channel `{name}`: resolving curve `{}`", ch.curve))?;
 
             let kick = if ch.zero_rpm {
                 Some(Kick {
@@ -239,7 +218,7 @@ impl Engine {
                 name: name.clone(),
                 hwmon_name: ch.hwmon_name.clone(),
                 pwm_index,
-                inputs,
+                tree,
                 ramp,
                 last_written: None,
                 min_pwm: ch.min_pwm,
@@ -607,18 +586,13 @@ impl Engine {
         let now = Instant::now();
         let mut channel_status = BTreeMap::new();
         for ch in &mut self.channels {
-            // Curves are evaluated even under an override: the smoothing
-            // windows stay warm, and status keeps reporting what the
-            // channel would do on its own.
-            let mut evals = Vec::with_capacity(ch.inputs.len());
-            for input in &mut ch.inputs {
-                let temp = *temps
-                    .get(&input.sensor)
-                    .with_context(|| format!("channel `{}`: sensor `{}`", ch.name, input.sensor))?;
-                evals.push((input.smoother.push(temp), &input.curve));
-            }
-            let raw_target = mix::eval_max(&evals)
-                .with_context(|| format!("channel `{}` has no inputs", ch.name))?;
+            // The curve tree is evaluated even under an override: the
+            // smoothing windows stay warm, and status keeps reporting what
+            // the channel would do on its own.
+            let raw_target = ch
+                .tree
+                .eval(&temps)
+                .with_context(|| format!("channel `{}`", ch.name))?;
 
             let (ramp_target, mode, override_remaining_s) = match self.overrides.get(&ch.name) {
                 Some(o) if now >= o.expires_at => {
@@ -763,12 +737,12 @@ mod tests {
         input = "temp1_input"
 
         [curves.c]
+        kind = "graph"
+        sensor = "cpu"
         points = [[40, 80], [70, 200]]
 
         [channels.pwm2]
         hwmon_name = "nct6799"
-        policy = "single"
-        sensor = "cpu"
         curve = "c"
         min_pwm = 70
         smoothing_seconds = 2
@@ -828,6 +802,32 @@ mod tests {
         // firmware pwm 128 and 136 is within one max_step_up.
         e.tick_once().unwrap();
         assert_eq!(read(&root, "pwm2"), "136");
+    }
+
+    #[test]
+    fn tick_evaluates_mix_curve_tree() {
+        let root = fake_sysfs();
+        // Two graph curves on the same sensor with different shapes; the
+        // mix takes the max of their outputs. At 54 °C: c → 136, hot → 156.
+        let mix_config = TEST_CONFIG.replace(
+            "curve = \"c\"",
+            "curve = \"m\"",
+        ) + r#"
+        [curves.hot]
+        kind = "graph"
+        sensor = "cpu"
+        points = [[40, 100], [70, 220]]
+
+        [curves.m]
+        kind = "mix"
+        curves = ["c", "hot"]
+    "#;
+        let cfg = Config::from_toml_str(&mix_config).unwrap();
+        let mut e = Engine::from_config(&cfg, &mix_config, root.path(), false).unwrap();
+        let status = e.tick_once().unwrap();
+        assert_eq!(status.channels["pwm2"].target_pwm, 156);
+        // Ramp starts at firmware pwm 128, limited to one max_step_up of 10.
+        assert_eq!(read(&root, "pwm2"), "138");
     }
 
     #[test]
@@ -1009,20 +1009,18 @@ mod tests {
         input = "temp1_input"
 
         [curves.c]
+        kind = "graph"
+        sensor = "cpu"
         points = [[40, 80], [70, 200]]
 
         [channels.pwm1]
         hwmon_name = "nct6799"
-        policy = "single"
-        sensor = "cpu"
         curve = "c"
         min_pwm = 80
         smoothing_seconds = 2
 
         [channels.pwm2]
         hwmon_name = "nct6799"
-        policy = "single"
-        sensor = "cpu"
         curve = "c"
         min_pwm = 70
         smoothing_seconds = 2

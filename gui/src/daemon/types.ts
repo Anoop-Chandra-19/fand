@@ -30,22 +30,18 @@ export function dutyPercent(pwm: number): number {
 /** A `(temp_c, pwm)` point, sorted by temp, linear interpolation between. */
 export type CurvePoint = [number, number];
 
-export interface CurveRef {
-  sensor: string;
-  curve: string;
-}
-
-export interface ChannelCurveRefs {
-  /** One entry for a `single` policy, one per input for `mix`. */
-  refs: CurveRef[];
-  /** Distinguishes the two shapes even when refs.length === 1 for both. */
-  is_mix: boolean;
-}
+/** A curve owns its temperature source (graph), combines other curves'
+ * outputs (mix), or is a constant (flat). */
+export type CurveInfo =
+  | { kind: "graph"; sensor: string; points: CurvePoint[] }
+  | { kind: "mix"; function: string; members: string[] }
+  | { kind: "flat"; pwm: number };
 
 export interface CurveEditorPayload {
-  curves: Record<string, CurvePoint[]>;
-  channels: Record<string, ChannelCurveRefs>;
-  /** Already-configured sensor names, for the "add mix input" picker. */
+  curves: Record<string, CurveInfo>;
+  /** channel name → the curve it binds. */
+  channels: Record<string, string>;
+  /** Already-configured sensor names, for graph-curve sensor pickers. */
   sensors: string[];
 }
 

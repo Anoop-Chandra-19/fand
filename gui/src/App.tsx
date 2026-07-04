@@ -20,10 +20,12 @@ function App() {
   const {
     data: curveData,
     setCurvePoints,
-    deleteCurve,
+    createGraphCurve,
+    setGraphSensor,
+    addMixMember,
+    removeMixMember,
     setChannelCurve,
-    addMixInput,
-    removeMixInput,
+    deleteCurve,
   } = useCurveEditor();
   const {
     data: settingsData,
@@ -68,12 +70,9 @@ function App() {
                         label={CHANNEL_LABELS[name]}
                         channel={channel}
                         history={history}
-                        curveRefs={curveData?.channels[name]}
+                        boundCurve={curveData?.channels[name]}
                         curveNames={curveNames}
-                        sensors={curveData?.sensors}
                         setChannelCurve={setChannelCurve}
-                        addMixInput={addMixInput}
-                        removeMixInput={removeMixInput}
                       />
                     ))}
                   </div>
@@ -90,6 +89,10 @@ function App() {
               data={curveData}
               temps={latest?.temps ?? {}}
               setCurvePoints={setCurvePoints}
+              createGraphCurve={createGraphCurve}
+              setGraphSensor={setGraphSensor}
+              addMixMember={addMixMember}
+              removeMixMember={removeMixMember}
               deleteCurve={deleteCurve}
             />
           )}

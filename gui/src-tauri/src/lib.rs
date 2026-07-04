@@ -7,7 +7,6 @@
 //! retries until the stream is back.
 
 mod curves;
-mod policy;
 mod settings;
 
 use std::path::PathBuf;
@@ -61,10 +60,12 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             curves::get_curve_editor_data,
             curves::set_curve_points,
+            curves::create_graph_curve,
+            curves::set_graph_sensor,
+            curves::add_mix_member,
+            curves::remove_mix_member,
+            curves::set_channel_curve,
             curves::delete_curve,
-            policy::set_channel_curve,
-            policy::add_mix_input,
-            policy::remove_mix_input,
             settings::get_channel_settings,
             settings::set_min_pwm,
             settings::set_smoothing_seconds,

@@ -7,6 +7,7 @@ use std::process::ExitCode;
 
 use anyhow::{anyhow, bail, Context, Result};
 use clap::{Parser, Subcommand};
+use fand_core::config::CurveConfig;
 use fand_proto::client::Client;
 use fand_proto::{Command, Status, SOCKET_PATH};
 
@@ -52,14 +53,17 @@ enum Cli {
 
 #[derive(Subcommand)]
 enum CurveCmd {
-    /// Print curve points (all curves, or one by name)
+    /// Print curves (all, or one by name)
     Show { name: Option<String> },
-    /// Replace a curve's points, e.g.: fanctl curve set cpu 40:80 60:55% 80:100%
+    /// Replace a graph curve's points, e.g.: fanctl curve set cpu 40:80 60:55% 80:100%
     Set {
         name: String,
         /// temp:pwm pairs; pwm as raw 0-255 or a percentage
         #[arg(required = true)]
         points: Vec<String>,
+        /// Create the curve bound to this sensor if it doesn't exist yet
+        #[arg(long)]
+        sensor: Option<String>,
     },
 }
 
@@ -89,7 +93,11 @@ fn main() -> ExitCode {
         Cli::Config(ConfigCmd::Reload) => config_reload(&args.socket),
         Cli::Config(ConfigCmd::Edit) => config_edit(&args.socket),
         Cli::Curve(CurveCmd::Show { name }) => curve_show(&args.socket, name.as_deref()),
-        Cli::Curve(CurveCmd::Set { name, points }) => curve_set(&args.socket, &name, &points),
+        Cli::Curve(CurveCmd::Set {
+            name,
+            points,
+            sensor,
+        }) => curve_set(&args.socket, &name, &points, sensor.as_deref()),
     };
     match result {
         Ok(()) => ExitCode::SUCCESS,
@@ -236,16 +244,34 @@ fn curve_show(socket: &Path, name: Option<&str>) -> Result<()> {
         if i > 0 {
             println!();
         }
-        println!("curve `{curve_name}`:");
-        println!("  {:>5}{:>7}{:>6}", "°C", "DUTY", "PWM");
-        for &(temp, pwm) in &curve.points {
-            println!("  {:>5}{:>7}{:>6}", temp, duty_percent(pwm as u8), pwm);
+        match curve {
+            CurveConfig::Graph(g) => {
+                println!("curve `{curve_name}` (graph, sensor `{}`):", g.sensor);
+                println!("  {:>5}{:>7}{:>6}", "°C", "DUTY", "PWM");
+                for &(temp, pwm) in &g.points {
+                    println!("  {:>5}{:>7}{:>6}", temp, duty_percent(pwm as u8), pwm);
+                }
+            }
+            CurveConfig::Mix(m) => {
+                println!(
+                    "curve `{curve_name}` (mix, {} of: {})",
+                    m.function.as_str(),
+                    m.curves.join(", ")
+                );
+            }
+            CurveConfig::Flat(f) => {
+                println!(
+                    "curve `{curve_name}` (flat: pwm {} = {})",
+                    f.pwm,
+                    duty_percent(f.pwm as u8)
+                );
+            }
         }
     }
     Ok(())
 }
 
-fn curve_set(socket: &Path, name: &str, point_args: &[String]) -> Result<()> {
+fn curve_set(socket: &Path, name: &str, point_args: &[String], sensor: Option<&str>) -> Result<()> {
     let points = point_args
         .iter()
         .map(|s| parse_point(s))
@@ -255,14 +281,22 @@ fn curve_set(socket: &Path, name: &str, point_args: &[String]) -> Result<()> {
         .map_err(|e| anyhow!("daemon sent a config that does not validate: {e}"))?
         .curves
         .contains_key(name);
-    let updated = fand_core::replace_curve_points(&current, name, &points)
-        .context("editing curve points")?;
+    let updated = match (is_new, sensor) {
+        (false, _) => fand_core::replace_curve_points(&current, name, &points)
+            .context("editing curve points")?,
+        (true, Some(sensor)) => fand_core::create_graph_curve(&current, name, sensor, &points)
+            .context("creating curve")?,
+        (true, None) => bail!(
+            "curve `{name}` does not exist — pass --sensor <name> to create it \
+             (a graph curve needs a temperature source)"
+        ),
+    };
     // Instant local feedback; the daemon re-validates anyway.
     fand_core::Config::from_toml_str(&updated)
         .map_err(|e| anyhow!("resulting config would be invalid: {e}"))?;
     connect(socket)?.request(Command::SetConfig { toml: updated })?;
     if is_new {
-        eprintln!("note: curve `{name}` did not exist — creating it (assign it to a channel to take effect)");
+        eprintln!("note: created curve `{name}` (bind it to a channel to take effect)");
     }
     println!(
         "curve `{name}` set to {} point(s), applied and persisted",

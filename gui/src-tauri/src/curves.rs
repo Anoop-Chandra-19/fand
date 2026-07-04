@@ -1,37 +1,40 @@
 //! Curve-editor Tauri commands: fetch the daemon's current curves (and
-//! which channel(s) reference each), and edit a curve's points.
+//! which channel binds each), and edit curves — graph points/sensor, mix
+//! membership, channel bindings.
 
 use std::collections::BTreeMap;
 
-use fand_core::config::Policy;
+use fand_core::config::CurveConfig;
 use fand_proto::client::Client;
 use fand_proto::Command;
 use serde::Serialize;
 
 use crate::socket_path;
 
+/// Mirrors `fand_core::config::CurveConfig` for the frontend, minus the
+/// hysteresis fields (inert until phase 8a — not shown yet).
 #[derive(Debug, Clone, Serialize)]
-pub struct CurveRef {
-    pub sensor: String,
-    pub curve: String,
-}
-
-#[derive(Debug, Clone, Serialize)]
-pub struct ChannelCurveRefs {
-    /// One entry for a `single` policy, one per input for `mix`.
-    pub refs: Vec<CurveRef>,
-    /// Distinguishes the two shapes even when `refs.len() == 1` for both
-    /// (a `mix` channel can have exactly one input, e.g. mid-edit).
-    pub is_mix: bool,
+#[serde(tag = "kind", rename_all = "lowercase")]
+pub enum CurveInfo {
+    Graph {
+        sensor: String,
+        points: Vec<(i32, u16)>,
+    },
+    Mix {
+        function: String,
+        members: Vec<String>,
+    },
+    Flat {
+        pwm: u16,
+    },
 }
 
 #[derive(Debug, Clone, Serialize)]
 pub struct CurveEditorPayload {
-    pub curves: BTreeMap<String, Vec<(i32, u16)>>,
-    pub channels: BTreeMap<String, ChannelCurveRefs>,
-    /// Already-configured sensor names, for the "add mix input" picker —
-    /// this UI reassigns curves on existing sensor bindings, it doesn't
-    /// create new ones.
+    pub curves: BTreeMap<String, CurveInfo>,
+    /// channel name → the curve it binds.
+    pub channels: BTreeMap<String, String>,
+    /// Already-configured sensor names, for graph-curve sensor pickers.
     pub sensors: Vec<String>,
 }
 
@@ -39,34 +42,26 @@ pub(crate) fn payload_from_config(cfg: &fand_core::Config) -> CurveEditorPayload
     let curves = cfg
         .curves
         .iter()
-        .map(|(name, curve)| (name.clone(), curve.points.clone()))
+        .map(|(name, curve)| {
+            let info = match curve {
+                CurveConfig::Graph(g) => CurveInfo::Graph {
+                    sensor: g.sensor.clone(),
+                    points: g.points.clone(),
+                },
+                CurveConfig::Mix(m) => CurveInfo::Mix {
+                    function: m.function.as_str().to_string(),
+                    members: m.curves.clone(),
+                },
+                CurveConfig::Flat(f) => CurveInfo::Flat { pwm: f.pwm },
+            };
+            (name.clone(), info)
+        })
         .collect();
 
     let channels = cfg
         .channels
         .iter()
-        .map(|(name, channel)| {
-            let (refs, is_mix) = match &channel.policy {
-                Policy::Single { sensor, curve } => (
-                    vec![CurveRef {
-                        sensor: sensor.clone(),
-                        curve: curve.clone(),
-                    }],
-                    false,
-                ),
-                Policy::Mix { inputs } => (
-                    inputs
-                        .iter()
-                        .map(|input| CurveRef {
-                            sensor: input.sensor.clone(),
-                            curve: input.curve.clone(),
-                        })
-                        .collect(),
-                    true,
-                ),
-            };
-            (name.clone(), ChannelCurveRefs { refs, is_mix })
-        })
+        .map(|(name, channel)| (name.clone(), channel.curve.clone()))
         .collect();
 
     let sensors = cfg.sensors.keys().cloned().collect();
@@ -79,10 +74,8 @@ pub(crate) fn payload_from_config(cfg: &fand_core::Config) -> CurveEditorPayload
 }
 
 /// Validates an edited config and sends it to the daemon, returning the
-/// fresh daemon-confirmed `Config` — shared by every write command across
-/// `curves.rs`, `policy.rs`, and `settings.rs` so none of them have to
-/// repeat the validate/send sequence, even though each builds a different
-/// payload shape from the result.
+/// fresh daemon-confirmed `Config` — shared by every write command here and
+/// in `settings.rs` so none of them repeat the validate/send sequence.
 pub(crate) fn apply_config(updated: String, client: &mut Client) -> Result<fand_core::Config, String> {
     let cfg = fand_core::Config::from_toml_str(&updated).map_err(|e| e.to_string())?;
     client
@@ -91,37 +84,89 @@ pub(crate) fn apply_config(updated: String, client: &mut Client) -> Result<fand_
     Ok(cfg)
 }
 
-pub(crate) fn apply(updated: String, client: &mut Client) -> Result<CurveEditorPayload, String> {
+fn apply(updated: String, client: &mut Client) -> Result<CurveEditorPayload, String> {
     apply_config(updated, client).map(|cfg| payload_from_config(&cfg))
+}
+
+fn connect() -> Result<(Client, String), String> {
+    let mut client = Client::connect(socket_path()).map_err(|e| e.to_string())?;
+    let current = client.get_config().map_err(|e| e.to_string())?;
+    Ok((client, current))
 }
 
 #[tauri::command]
 pub fn get_curve_editor_data() -> Result<CurveEditorPayload, String> {
-    let mut client = Client::connect(socket_path()).map_err(|e| e.to_string())?;
-    let toml_text = client.get_config().map_err(|e| e.to_string())?;
+    let (_, toml_text) = connect()?;
     let cfg = fand_core::Config::from_toml_str(&toml_text).map_err(|e| e.to_string())?;
     Ok(payload_from_config(&cfg))
 }
 
-/// Edits an existing curve's points, or creates a new curve with these
-/// points if `name` doesn't exist yet. Returns the fresh, daemon-confirmed
-/// payload so the frontend never has to guess what actually got applied.
+/// Replaces an existing graph curve's points. Returns the fresh,
+/// daemon-confirmed payload so the frontend never has to guess what
+/// actually got applied.
 #[tauri::command]
 pub fn set_curve_points(name: String, points: Vec<(i32, u8)>) -> Result<CurveEditorPayload, String> {
-    let mut client = Client::connect(socket_path()).map_err(|e| e.to_string())?;
-    let current = client.get_config().map_err(|e| e.to_string())?;
+    let (mut client, current) = connect()?;
     let updated =
         fand_core::replace_curve_points(&current, &name, &points).map_err(|e| e.to_string())?;
     apply(updated, &mut client)
 }
 
-/// Removes a curve. Fails (daemon-validated) if any channel still
+/// Creates a new graph curve bound to `sensor`.
+#[tauri::command]
+pub fn create_graph_curve(
+    name: String,
+    sensor: String,
+    points: Vec<(i32, u8)>,
+) -> Result<CurveEditorPayload, String> {
+    let (mut client, current) = connect()?;
+    let updated = fand_core::create_graph_curve(&current, &name, &sensor, &points)
+        .map_err(|e| e.to_string())?;
+    apply(updated, &mut client)
+}
+
+/// Rebinds which sensor drives a graph curve.
+#[tauri::command]
+pub fn set_graph_sensor(name: String, sensor: String) -> Result<CurveEditorPayload, String> {
+    let (mut client, current) = connect()?;
+    let updated =
+        fand_core::set_graph_sensor(&current, &name, &sensor).map_err(|e| e.to_string())?;
+    apply(updated, &mut client)
+}
+
+/// Adds a member curve to a mix.
+#[tauri::command]
+pub fn add_mix_member(name: String, member: String) -> Result<CurveEditorPayload, String> {
+    let (mut client, current) = connect()?;
+    let updated =
+        fand_core::add_mix_member(&current, &name, &member).map_err(|e| e.to_string())?;
+    apply(updated, &mut client)
+}
+
+/// Removes a member curve from a mix (the daemon rejects dropping to zero).
+#[tauri::command]
+pub fn remove_mix_member(name: String, member: String) -> Result<CurveEditorPayload, String> {
+    let (mut client, current) = connect()?;
+    let updated =
+        fand_core::remove_mix_member(&current, &name, &member).map_err(|e| e.to_string())?;
+    apply(updated, &mut client)
+}
+
+/// Rebinds which curve drives a channel.
+#[tauri::command]
+pub fn set_channel_curve(channel: String, curve: String) -> Result<CurveEditorPayload, String> {
+    let (mut client, current) = connect()?;
+    let updated =
+        fand_core::set_channel_curve(&current, &channel, &curve).map_err(|e| e.to_string())?;
+    apply(updated, &mut client)
+}
+
+/// Removes a curve. Fails (daemon-validated) if any channel or mix still
 /// references it — the frontend should already be disabling this for
 /// in-use curves, but the daemon is the backstop.
 #[tauri::command]
 pub fn delete_curve(name: String) -> Result<CurveEditorPayload, String> {
-    let mut client = Client::connect(socket_path()).map_err(|e| e.to_string())?;
-    let current = client.get_config().map_err(|e| e.to_string())?;
+    let (mut client, current) = connect()?;
     let updated = fand_core::remove_curve(&current, &name).map_err(|e| e.to_string())?;
     apply(updated, &mut client)
 }
