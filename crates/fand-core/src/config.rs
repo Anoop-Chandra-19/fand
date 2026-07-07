@@ -5,18 +5,26 @@
 //! (mix); a channel always binds exactly one curve by name.
 //!
 //! Validation rejects: unsorted curve points, pwm out of 0–255, unknown
-//! sensor/curve references anywhere in a curve tree, mix cycles, zero_rpm
-//! without kick parameters, and min_pwm below the stall floor unless
-//! zero_rpm is explicitly enabled.
+//! sensor/curve references anywhere in a curve tree, mix cycles, and
+//! min_pwm below the channel's floor (60 everywhere, 80 on pwm1 — the AIO
+//! pump rides that header inline). Fans never stop: there is no zero-RPM
+//! mode.
 
 use std::collections::BTreeMap;
 
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
-/// Fans may stall below this duty; configs must not set a lower min_pwm
-/// unless the channel explicitly opts into zero_rpm (with kick parameters).
+/// Fans may stall below this duty; no channel may set a lower min_pwm.
 pub const MIN_PWM_FLOOR: u8 = 60;
+
+/// The channel carrying the AIO pump inline (pump + VRM fan + rad fans on
+/// one header, pump has no tach). Its duty must never drop below
+/// [`PUMP_MIN_PWM_FLOOR`].
+pub const PUMP_CHANNEL: &str = "pwm1";
+
+/// At/above the firmware-auto idle (77/255) this system has proven safe.
+pub const PUMP_MIN_PWM_FLOOR: u8 = 80;
 
 /// Hysteresis wider than this is a config mistake, not a preference — the
 /// whole useful curve range is only ~40 °C.
@@ -45,6 +53,7 @@ fn default_true() -> bool {
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct Config {
     #[serde(default)]
     pub daemon: DaemonConfig,
@@ -71,11 +80,27 @@ impl Default for DaemonConfig {
     }
 }
 
+/// Newtype variants (like `CurveConfig`) so each payload struct can carry
+/// `deny_unknown_fields` — serde does not support that attribute directly
+/// on internally-tagged enums.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "lowercase")]
 pub enum SensorConfig {
-    Hwmon { hwmon_name: String, input: String },
-    Nvml { device_index: u32 },
+    Hwmon(HwmonSensor),
+    Nvml(NvmlSensor),
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct HwmonSensor {
+    pub hwmon_name: String,
+    pub input: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct NvmlSensor {
+    pub device_index: u32,
 }
 
 /// A curve is graph (points evaluated at its own sensor), mix (combines
@@ -150,6 +175,7 @@ pub struct FlatCurve {
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct ChannelConfig {
     pub hwmon_name: String,
     /// The one curve driving this channel (mixing is a curve's job).
@@ -163,12 +189,6 @@ pub struct ChannelConfig {
     pub max_step_down: u8,
     #[serde(default = "default_deadband")]
     pub deadband: u8,
-    #[serde(default)]
-    pub zero_rpm: bool,
-    #[serde(default)]
-    pub kick_pwm: Option<u8>,
-    #[serde(default)]
-    pub kick_seconds: Option<u64>,
 }
 
 #[derive(Debug, Error, PartialEq)]
@@ -205,13 +225,17 @@ pub enum ValidationError {
     FlatPwmOutOfRange { curve: String, pwm: u16 },
     #[error("channel `{channel}`: unknown curve `{curve}`")]
     UnknownCurve { channel: String, curve: String },
-    #[error("channel `{channel}`: zero_rpm requires kick_pwm and kick_seconds")]
-    ZeroRpmWithoutKick { channel: String },
-    #[error(
-        "channel `{channel}`: min_pwm {min_pwm} is below the stall floor {floor} \
-         (enable zero_rpm explicitly if you want fans to stop)"
-    )]
+    #[error("channel `{channel}`: min_pwm {min_pwm} is below the stall floor {floor}")]
     MinPwmBelowFloor {
+        channel: String,
+        min_pwm: u8,
+        floor: u8,
+    },
+    #[error(
+        "channel `{channel}`: min_pwm {min_pwm} is below the pump floor {floor} \
+         (the AIO pump rides this header inline and must never slow past it)"
+    )]
+    MinPwmBelowPumpFloor {
         channel: String,
         min_pwm: u8,
         floor: u8,
@@ -278,12 +302,13 @@ impl Config {
                     curve: ch.curve.clone(),
                 });
             }
-            if ch.zero_rpm && (ch.kick_pwm.is_none() || ch.kick_seconds.is_none()) {
-                errs.push(ValidationError::ZeroRpmWithoutKick {
+            if name == PUMP_CHANNEL && ch.min_pwm < PUMP_MIN_PWM_FLOOR {
+                errs.push(ValidationError::MinPwmBelowPumpFloor {
                     channel: name.clone(),
+                    min_pwm: ch.min_pwm,
+                    floor: PUMP_MIN_PWM_FLOOR,
                 });
-            }
-            if !ch.zero_rpm && ch.min_pwm < MIN_PWM_FLOOR {
+            } else if ch.min_pwm < MIN_PWM_FLOOR {
                 errs.push(ValidationError::MinPwmBelowFloor {
                     channel: name.clone(),
                     min_pwm: ch.min_pwm,
@@ -452,7 +477,7 @@ mod tests {
             sensor = "cpu"
             points = [[40, 80], [70, 200]]
 
-            [channels.pwm1]
+            [channels.pwm2]
             hwmon_name = "nct6799"
             curve = "c"
             min_pwm = 70
@@ -487,11 +512,10 @@ mod tests {
     fn defaults_applied_when_omitted() {
         let cfg = Config::from_toml_str(&base_toml()).unwrap();
         assert_eq!(cfg.daemon.tick_seconds, 2, "missing [daemon] uses default");
-        let ch = &cfg.channels["pwm1"];
+        let ch = &cfg.channels["pwm2"];
         assert_eq!(ch.max_step_up, 10);
         assert_eq!(ch.max_step_down, 3);
         assert_eq!(ch.deadband, 3);
-        assert!(!ch.zero_rpm);
         let CurveConfig::Graph(g) = &cfg.curves["c"] else {
             panic!("expected graph curve");
         };
@@ -588,7 +612,7 @@ mod tests {
     }
 
     fn with_mix(base: &str, mix: &str) -> String {
-        base.replace("[channels.pwm1]", &format!("{mix}\n            [channels.pwm1]"))
+        base.replace("[channels.pwm2]", &format!("{mix}\n            [channels.pwm2]"))
     }
 
     #[test]
@@ -688,15 +712,53 @@ mod tests {
     }
 
     #[test]
-    fn zero_rpm_without_kick_rejected() {
+    fn zero_rpm_key_rejected_at_parse() {
+        // zero_rpm mode was removed outright: fans never stop. An old
+        // config carrying the key must fail loudly, not be ignored.
         let toml_str = base_toml().replace("min_pwm = 70", "min_pwm = 70\nzero_rpm = true");
-        assert!(errors_of(&toml_str)
-            .iter()
-            .any(|e| matches!(e, ValidationError::ZeroRpmWithoutKick { .. })));
+        assert!(matches!(
+            Config::from_toml_str(&toml_str),
+            Err(ConfigError::Parse(_))
+        ));
     }
 
     #[test]
-    fn min_pwm_below_floor_rejected_without_zero_rpm() {
+    fn unknown_top_level_table_rejected_at_parse() {
+        let toml_str = format!("{}\n[policy]\nmode = \"single\"\n", base_toml());
+        assert!(matches!(
+            Config::from_toml_str(&toml_str),
+            Err(ConfigError::Parse(_))
+        ));
+    }
+
+    #[test]
+    fn unknown_sensor_field_rejected_at_parse() {
+        // deny_unknown_fields lives on the newtype variants' payload
+        // structs; this proves it still fires through the tagged enum.
+        let toml_str = base_toml().replace(
+            "input = \"temp1_input\"",
+            "input = \"temp1_input\"\n            offset = 5",
+        );
+        assert!(matches!(
+            Config::from_toml_str(&toml_str),
+            Err(ConfigError::Parse(_))
+        ));
+    }
+
+    #[test]
+    fn unknown_curve_field_rejected_at_parse() {
+        let toml_str = base_toml().replace(
+            "sensor = \"cpu\"",
+            "sensor = \"cpu\"\n            fill = true",
+        );
+        assert!(matches!(
+            Config::from_toml_str(&toml_str),
+            Err(ConfigError::Parse(_))
+        ));
+    }
+
+    #[test]
+    fn min_pwm_below_floor_rejected() {
         let toml_str = base_toml().replace("min_pwm = 70", "min_pwm = 30");
         assert!(errors_of(&toml_str)
             .iter()
@@ -704,17 +766,22 @@ mod tests {
     }
 
     #[test]
-    fn min_pwm_below_floor_allowed_with_zero_rpm_and_kick() {
-        let toml_str = base_toml().replace(
-            "min_pwm = 70",
-            "min_pwm = 30\nzero_rpm = true\nkick_pwm = 100\nkick_seconds = 3",
-        );
-        Config::from_toml_str(&toml_str).expect("opt-in zero_rpm with kick must be accepted");
+    fn pump_channel_min_pwm_floor_is_80() {
+        // pwm1 carries the AIO pump inline: 70 clears the generic floor
+        // but not the pump floor.
+        let toml_str = base_toml().replace("[channels.pwm2]", "[channels.pwm1]");
+        assert!(errors_of(&toml_str).iter().any(|e| matches!(
+            e,
+            ValidationError::MinPwmBelowPumpFloor { min_pwm: 70, floor: 80, .. }
+        )));
+
+        let ok = toml_str.replace("min_pwm = 70", "min_pwm = 80");
+        Config::from_toml_str(&ok).expect("pwm1 at the pump floor must be accepted");
     }
 
     #[test]
     fn bad_channel_name_rejected() {
-        let toml_str = base_toml().replace("[channels.pwm1]", "[channels.pmw1]");
+        let toml_str = base_toml().replace("[channels.pwm2]", "[channels.pmw2]");
         assert!(errors_of(&toml_str)
             .iter()
             .any(|e| matches!(e, ValidationError::BadChannelName { .. })));

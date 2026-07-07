@@ -53,17 +53,10 @@ export function useChannelSettings() {
     [runWrite],
   );
 
-  const setZeroRpm = useCallback(
-    (channel: string, zeroRpm: boolean, kickPwm: number | null, kickSeconds: number | null) =>
-      runWrite("set_zero_rpm", { channel, zeroRpm, kickPwm, kickSeconds }),
-    [runWrite],
-  );
-
   return {
     data,
     error,
     setMinPwm,
     setSmoothingSeconds,
-    setZeroRpm,
   };
 }

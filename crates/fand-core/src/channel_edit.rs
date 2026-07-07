@@ -1,12 +1,11 @@
 //! Surgical edits to a channel's tuning knobs (`curve` binding, `min_pwm`,
-//! `smoothing_seconds`, `zero_rpm` + kick params) in a config's raw TOML
-//! text — same `toml_edit` approach as [`crate::curve_edit`], so every
-//! comment and all formatting elsewhere survives untouched.
+//! `smoothing_seconds`) in a config's raw TOML text — same `toml_edit`
+//! approach as [`crate::curve_edit`], so every comment and all formatting
+//! elsewhere survives untouched.
 //!
-//! Business rules (e.g. "zero_rpm requires kick_pwm and kick_seconds", the
-//! min_pwm stall floor) are not re-checked here — `Config::validate` is the
-//! single source of truth for those, applied by the caller after this
-//! module hands back the edited TOML text.
+//! Business rules (e.g. the min_pwm floors) are not re-checked here —
+//! `Config::validate` is the single source of truth for those, applied by
+//! the caller after this module hands back the edited TOML text.
 
 use thiserror::Error;
 use toml_edit::{value, DocumentMut, Item, Table};
@@ -62,33 +61,6 @@ pub fn set_smoothing_seconds(
     let mut doc: DocumentMut = toml_text.parse()?;
     let chan = channel_table(&mut doc, channel)?;
     chan["smoothing_seconds"] = value(i64::try_from(seconds).unwrap_or(i64::MAX));
-    Ok(doc.to_string())
-}
-
-/// Set `zero_rpm` and its kick parameters atomically. Disabling removes
-/// `kick_pwm`/`kick_seconds` entirely (clean TOML, matches their `Option<>`
-/// semantics in `ChannelConfig`); enabling writes all three keys.
-pub fn set_zero_rpm(
-    toml_text: &str,
-    channel: &str,
-    enabled: bool,
-    kick_pwm: Option<u8>,
-    kick_seconds: Option<u64>,
-) -> Result<String, ChannelEditError> {
-    let mut doc: DocumentMut = toml_text.parse()?;
-    let chan = channel_table(&mut doc, channel)?;
-    chan["zero_rpm"] = value(enabled);
-    if enabled {
-        if let Some(pwm) = kick_pwm {
-            chan["kick_pwm"] = value(i64::from(pwm));
-        }
-        if let Some(secs) = kick_seconds {
-            chan["kick_seconds"] = value(i64::try_from(secs).unwrap_or(i64::MAX));
-        }
-    } else {
-        chan.remove("kick_pwm");
-        chan.remove("kick_seconds");
-    }
     Ok(doc.to_string())
 }
 
@@ -152,29 +124,4 @@ smoothing_seconds = 5
         assert!(out.contains("smoothing_seconds = 5"), "pwm2 untouched");
     }
 
-    #[test]
-    fn set_zero_rpm_enables_with_kick_params() {
-        let out = set_zero_rpm(TOML, "pwm2", true, Some(100), Some(3)).unwrap();
-        assert!(out.contains("zero_rpm = true"));
-        assert!(out.contains("kick_pwm = 100"));
-        assert!(out.contains("kick_seconds = 3"));
-        assert!(out.contains("# pwm2 comment stays"));
-    }
-
-    #[test]
-    fn set_zero_rpm_disable_removes_kick_keys() {
-        let with_kick = set_zero_rpm(TOML, "pwm2", true, Some(100), Some(3)).unwrap();
-        let out = set_zero_rpm(&with_kick, "pwm2", false, None, None).unwrap();
-        assert!(out.contains("zero_rpm = false"));
-        assert!(!out.contains("kick_pwm"));
-        assert!(!out.contains("kick_seconds"));
-    }
-
-    #[test]
-    fn set_zero_rpm_rejects_unknown_channel() {
-        assert!(matches!(
-            set_zero_rpm(TOML, "pwm9", true, Some(100), Some(3)),
-            Err(ChannelEditError::UnknownChannel(c)) if c == "pwm9"
-        ));
-    }
 }

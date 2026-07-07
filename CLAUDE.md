@@ -15,17 +15,21 @@ This daemon writes to real fan hardware as root. Non-negotiable:
   with `pwm*_enable = 5` (firmware auto; verified restore value on NCT6799).
 - Sensor failure (read error, temp ≤ 0 °C, temp ≥ 115 °C) ⇒ write 255 to all
   controlled PWMs ⇒ restore auto ⇒ exit nonzero. Never loop on stale data.
-- min_pwm floor default 60+ unless zero_rpm is explicitly enabled with kick
-  parameters (kick_pwm ~100 for a few seconds when leaving 0).
+- min_pwm floor 60 on every channel; fans never stop (zero-RPM mode was
+  removed 2026-07-06 — the GPU's own driver handles GPU fan idle-stop, and
+  fand never controls GPU fans anyway).
 - **pwm1 carries the AIO pump inline** (Arctic Liquid Freezer II 360: pump +
-  VRM fan + 3 rad fans on one header, pump has no tach). zero_rpm must never
-  be enabled on pwm1, and its min_pwm stays ≥ 80 (~31% duty — at/above the
-  firmware-auto idle of 77/255 this system has proven safe).
+  VRM fan + 3 rad fans on one header, pump has no tach). Its min_pwm stays
+  ≥ 80 (~31% duty — at/above the firmware-auto idle of 77/255 this system
+  has proven safe). Both floors are enforced in `Config::validate`.
 - Resolve hwmon devices by `name` file at every start ("nct6799", "k10temp");
   indices are not stable across boots.
 - Never control GPU fans — the GPU is a temperature input only (via NVML).
-- Mix mode is max-of-outputs (each curve evaluated at its own sensor), never
-  one curve fed the max temperature.
+- Mixes combine member curve *outputs* (each curve evaluated at its own
+  sensor), never one curve fed a combined temperature. `max` is the default
+  and the safety-documented choice; `min`/`average` are explicit opt-ins
+  (phase-7 decision) that clients must always display — a min-mix can
+  under-cool the hotter component.
 
 ## Workflow
 

@@ -49,9 +49,6 @@ export interface CurveEditorPayload {
 export interface ChannelSettings {
   min_pwm: number;
   smoothing_seconds: number;
-  zero_rpm: boolean;
-  kick_pwm: number | null;
-  kick_seconds: number | null;
 }
 
 export type ChannelSettingsPayload = Record<string, ChannelSettings>;

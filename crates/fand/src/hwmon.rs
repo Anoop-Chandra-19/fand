@@ -65,6 +65,10 @@ impl HwmonDevice {
         self.path.join(format!("pwm{n}_enable"))
     }
 
+    pub fn pwm_path(&self, n: u32) -> PathBuf {
+        self.path.join(format!("pwm{n}"))
+    }
+
     /// Every pwmN_enable file the chip exposes (used by --restore-auto,
     /// which must cover channels beyond the configured ones).
     pub fn all_pwm_enable_paths(&self) -> Result<Vec<PathBuf>> {

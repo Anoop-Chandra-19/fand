@@ -68,8 +68,7 @@ pub fn run() {
             curves::delete_curve,
             settings::get_channel_settings,
             settings::set_min_pwm,
-            settings::set_smoothing_seconds,
-            settings::set_zero_rpm
+            settings::set_smoothing_seconds
         ])
         .setup(|app| {
             let handle = app.handle().clone();

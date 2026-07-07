@@ -64,11 +64,11 @@ is frozen until the temp genuinely moves.
 
 - **Step up % / Step down %** — max output change per update tick, asymmetric
   (fand has this ✓).
-- **Start %** — kick value used to spin a stopped fan back up (fand's
-  `kick_pwm` ✓).
+- **Start %** — kick value used to spin a stopped fan back up (fand
+  deliberately has no equivalent — zero-RPM mode was removed 2026-07-06,
+  fans never stop).
 - **Stop %** — below this computed value, snap output to 0 (this is how
-  zero-RPM is expressed; fand's `zero_rpm` + `min_pwm` floor ✓, with our
-  stricter safety rules).
+  zero-RPM is expressed; not adopted — see Start %).
 - **Offset %** — added to the curve's output for this control only (lets two
   fans share one curve with a bias).
 - **Minimum %** — hard floor (fand's `min_pwm` ✓).
@@ -95,7 +95,8 @@ setup at first run detects which control moves which fan.
 ### A.7 Gap analysis — what this implies for fand
 
 Already matching: named curves + channels, max-of-outputs mix, asymmetric
-ramp, min floor, kick-on-start, per-channel smoothing.
+ramp, min floor, per-channel smoothing. (Kick-on-start matched at the time;
+it left with zero-RPM mode, 2026-07-06.)
 
 Worth adopting (roughly in order of value):
 
@@ -106,11 +107,12 @@ Worth adopting (roughly in order of value):
    Max stays the safety-documented default). Channel then always binds one
    curve — simplifies the channel model.
 3. **Flat curve type** — trivial, useful for testing and for the GUI.
-4. **Trigger curve type** — nice for a semi-passive case fan, but interacts
-   with zero-RPM safety rules; if added, forbid on pwm1 like zero_rpm.
+4. **Trigger curve type** — nice for a semi-passive case fan; if added,
+   forbid on pwm1 like the pump floor, and idle_pwm keeps the min_pwm floor
+   (zero-RPM mode was removed 2026-07-06 — fans never stop).
 5. **Per-channel offset %** — cheap, lets pwm1/pwm2 share a curve later.
-6. **Calibration (`fanctl calibrate pwm2`)** — sweep down to find stop/start
-   points to *inform* min_pwm/kick config. Constraints: interactive only,
+6. **Calibration (`fanctl calibrate pwm2`)** — sweep down to find stall/start
+   points to *inform* min_pwm config. Constraints: interactive only,
    refuse on pwm1 (pump inline), clamp test floor, timeout back to curve.
 7. **Time-average as explicit smoothing config on the sensor** rather than
    the channel — matches FanControl's model; optional refactor.
@@ -144,8 +146,8 @@ two channels on this board), **Sum/Subtract** mixes.
   (white-alpha) highlight, *not* accent color. Rows are rounded and padded.
 - **Boxed lists** (`.boxed-list`) for all settings/forms: cards containing
   rows — `AdwActionRow` (title + subtitle + trailing widget), `SwitchRow`,
-  `SpinRow`, `ComboRow`, `ExpanderRow` (e.g. zero-RPM toggle that expands to
-  kick params). Lists have max width (~576px in prefs pages), centered.
+  `SpinRow`, `ComboRow`, `ExpanderRow` (a toggle row that expands to its
+  detail rows). Lists have max width (~576px in prefs pages), centered.
 - **Cards** (`.card`) for dashboard content; can be `.activatable` (hover
   state) if clickable.
 - **Feedback:** toasts (bottom, floating pill) for "config applied";
@@ -260,9 +262,8 @@ tabular figures; this is a one-line CSS fix with visible payoff.
 3. Curve editor: `AdwDialog`-style floating sheet (15px radius, backdrop
    dim, Cancel / Apply-suggested in its header) — or inline page; graph
    colors from chart palette, points in accent.
-4. Settings: real boxed lists — switch rows, spin rows, expander row for
-   zero-RPM (expands to kick_pwm/kick_seconds, disabled+locked on pwm1 with
-   explanatory subtitle).
+4. Settings: real boxed lists — switch rows, spin rows (no zero-RPM
+   controls: the mode was removed 2026-07-06).
 5. Status/feedback: toast on config apply; warning `AdwBanner` when an
    override is active or the daemon socket drops; `AdwStatusPage` when
    disconnected.

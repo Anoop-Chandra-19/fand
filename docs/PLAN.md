@@ -21,7 +21,7 @@ resolve hwmon devices by `name` file at runtime, never by index.
 
 | Channel | Wired? | Physical | Notes |
 |---|---|---|---|
-| fan1 / pwm1 | yes (~636 RPM idle) | **Arctic Liquid Freezer II 360**: pump + VRM fan + 3 rad fans daisy-chained on one header (pump has no tach) | rad has coolant thermal mass → longer smoothing window. **Pump shares this PWM: zero_rpm forbidden; min_pwm ≥ 80** (pump sits at its 800 RPM floor below ~40% duty; firmware auto idles at 77/255, proven safe) |
+| fan1 / pwm1 | yes (~636 RPM idle) | **Arctic Liquid Freezer II 360**: pump + VRM fan + 3 rad fans daisy-chained on one header (pump has no tach) | rad has coolant thermal mass → longer smoothing window. **Pump shares this PWM: min_pwm ≥ 80, must never stop** (pump sits at its 800 RPM floor below ~40% duty; firmware auto idles at 77/255, proven safe) |
 | fan2 / pwm2 | yes (~775 RPM idle) | Case fans via Lancool 216 built-in controller (PWM passthrough) | verified manual control: pwm=100 → 895 RPM, pwm=255 → 1483 RPM; hub reports one tach for the group |
 | fan3–fan5 | no (0 RPM) | empty headers | probe liveness at startup, never write to dead channels |
 | pwm7 | exists in sysfs | no matching fan_input | ignore |
@@ -73,10 +73,10 @@ Key crates: `nvml-wrapper`, `serde` + `toml`, `clap` (fanctl), `tokio` or std th
 ```
 read cpu_temp   (k10temp Tctl, millidegrees → °C)
 read gpu_temp   (NVML)
-read board temps as configured (e.g. SYSTIN)
+read board temps referenced by channel curve trees (unreferenced sensors are not read)
 for each configured channel:
     smoothed = rolling average over channel's window (rad channel: longer window, e.g. 10–15 s; case: ~5 s)
-    target_pwm = channel policy (see §4)
+    target_pwm = curve-tree output (see §4; input hysteresis applies here)
     apply hysteresis: only move if |target − current| ≥ deadband (e.g. 3 PWM units) or temp crossed a curve point
     ramp: step current toward target, asymmetric — max_step_up per tick (fast, e.g. 10)
           vs max_step_down per tick (slow, e.g. 3) so fans respond to load but decay quietly
@@ -92,7 +92,7 @@ for each configured channel:
 - Signal handlers for SIGTERM/SIGINT trigger clean shutdown through the guard.
 - `std::panic::set_hook` (or catch_unwind at top level) also restores auto before aborting.
 - systemd `ExecStopPost=/usr/local/bin/fand --restore-auto` covers SIGKILL: a subcommand that just finds nct6799 and writes `pwmN_enable = 5` to all channels, then exits.
-- Optional zero-RPM mode for case fans is **opt-in per channel** and requires restart-burst logic: when leaving 0, write a kick duty (~100) for a few seconds before settling to curve value. Default min_pwm floor otherwise ~60–80 so fans can't stall by accident.
+- No zero-RPM mode (removed 2026-07-06 — it originally mimicked NVIDIA's idle fan stop, but the GPU's own driver does that and fand never controls GPU fans; motherboard-header fans should always run). min_pwm floor 60 on every channel, 80 on pwm1, both enforced in validation, so fans can't stall by accident.
 
 ---
 
@@ -158,7 +158,6 @@ hwmon_name = "nct6799"
 curve = "case_mix"
 min_pwm = 70
 smoothing_seconds = 5
-zero_rpm = false           # opt-in; if true, requires kick_pwm + kick_seconds
 ```
 
 Config lives at `/etc/fand/config.toml`; daemon validates fully before applying (reject unsorted points, pwm out of 0–255, unknown sensor/curve refs, dead channels). Writes from clients are atomic (write temp file + rename) and hot-reloaded.
@@ -171,7 +170,7 @@ Unix socket `/run/fand/fand.sock`, owner `root:fand`, mode `0660`. User must be 
 
 Newline-delimited JSON request/response + a subscription stream:
 
-- `get_status` → temps (all sensors), per-channel {rpm, current_pwm, target_pwm, mode}
+- `get_status` → temps (every sensor read, i.e. those referenced by channel curve trees), per-channel {rpm, current_pwm, target_pwm, mode}
 - `subscribe_status` → server pushes status at 1–2 Hz (feeds live graphs in GUI and `fanctl watch`)
 - `get_config` / `set_config` (full validated TOML round-trip)
 - `set_override { channel, pwm, ttl_seconds }` → pin a channel temporarily (testing); auto-expires
@@ -197,7 +196,7 @@ Version field in every message for forward compat.
 - Tauri Rust backend reuses `fand-proto` client code; frontend talks to it via Tauri commands/events. Zero privileges needed.
 - **Curve editor:** SVG with draggable points per curve (add/remove points, snap, live preview of interpolation). On drag-end → `set_config`.
 - **Live dashboard:** rolling line charts of CPU/GPU temps and per-fan RPM/PWM (recharts or d3), fed by `subscribe_status` events.
-- **Channel panel:** per-channel policy (single/mix), sensor+curve assignment, min_pwm, smoothing, zero-RPM toggle with kick settings.
+- **Channel panel:** per-channel curve binding, min_pwm, smoothing (mixing/sensors live on the curves themselves since phase 7).
 - Native Wayland; must work well on niri (no CSD weirdness expected with Tauri, but verify).
 - Visual affordance for "override active" and "sensor failure / failsafe engaged" states.
 
@@ -248,5 +247,5 @@ WantedBy=multi-user.target
 - No PWM write outside 0–255; no write to a channel not both configured and probed-live.
 - Every exit path (clean, signal, panic, SIGKILL-via-ExecStopPost) ends with `pwm*_enable = 5`.
 - Sensor failure ⇒ 255 everywhere ⇒ restore auto ⇒ exit nonzero. Never loop on stale data.
-- min_pwm floor default 60 unless zero_rpm explicitly enabled with kick parameters.
+- min_pwm floor 60 on every channel (80 on pwm1); no zero-RPM mode — fans never stop.
 - hwmon devices resolved by `name` every start; indices are not stable across boots.

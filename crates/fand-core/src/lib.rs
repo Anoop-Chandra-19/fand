@@ -17,10 +17,11 @@ pub mod hysteresis;
 pub mod ramp;
 pub mod smoothing;
 
-pub use channel_edit::{
-    set_channel_curve, set_min_pwm, set_smoothing_seconds, set_zero_rpm, ChannelEditError,
+pub use channel_edit::{set_channel_curve, set_min_pwm, set_smoothing_seconds, ChannelEditError};
+pub use config::{
+    Config, ConfigError, MixFunction, ValidationError, MIN_PWM_FLOOR, PUMP_CHANNEL,
+    PUMP_MIN_PWM_FLOOR,
 };
-pub use config::{Config, ConfigError, MixFunction, ValidationError, MIN_PWM_FLOOR};
 pub use curve::{Curve, CurveError};
 pub use curve_edit::{
     add_mix_member, create_graph_curve, remove_curve, remove_mix_member, replace_curve_points,
@@ -28,5 +29,5 @@ pub use curve_edit::{
 };
 pub use eval::{CurveTree, EvalError, TreeError};
 pub use hysteresis::InputFilter;
-pub use ramp::{Kick, Ramp, RampConfig};
+pub use ramp::{Ramp, RampConfig};
 pub use smoothing::{window_ticks, RollingAverage};

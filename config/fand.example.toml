@@ -52,9 +52,10 @@ curves = ["cpu_case", "gpu_case"]
 
 # pwm1: Arctic Liquid Freezer II 360 — pump + VRM fan + 3 rad fans all share
 # this one PWM signal; coolant thermal mass justifies the longer smoothing
-# window. Never enable zero_rpm here. Pump runs at its 800 RPM minimum below
-# ~40% duty; firmware auto idles this system at 77/255 (~30%) without issue,
-# so min_pwm = 80 stays at/above the observed-safe floor.
+# window. Pump runs at its 800 RPM minimum below ~40% duty; firmware auto
+# idles this system at 77/255 (~30%) without issue, so min_pwm = 80 stays
+# at/above the observed-safe floor (the daemon rejects anything lower on
+# pwm1).
 [channels.pwm1]
 hwmon_name = "nct6799"
 curve = "cpu_rad"
@@ -71,4 +72,3 @@ min_pwm = 70
 smoothing_seconds = 5
 max_step_up = 10
 max_step_down = 3
-zero_rpm = false           # opt-in; if true, requires kick_pwm + kick_seconds

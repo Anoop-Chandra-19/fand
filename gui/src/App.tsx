@@ -31,7 +31,6 @@ function App() {
     data: settingsData,
     setMinPwm,
     setSmoothingSeconds,
-    setZeroRpm,
   } = useChannelSettings();
   const curveNames = curveData ? Object.keys(curveData.curves) : [];
   const [page, setPage] = useState<Page>("overview");
@@ -103,7 +102,6 @@ function App() {
               labels={CHANNEL_LABELS}
               setMinPwm={setMinPwm}
               setSmoothingSeconds={setSmoothingSeconds}
-              setZeroRpm={setZeroRpm}
             />
           )}
         </main>

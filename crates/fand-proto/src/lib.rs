@@ -125,9 +125,9 @@ pub struct ChannelStatus {
     pub rpm: u32,
     /// PWM actually written this tick (ramp output).
     pub current_pwm: u8,
-    /// Raw curve/mix target this tick, before hysteresis/ramping. Reports
-    /// the curve value even while an override is active, so clients can
-    /// show what the channel would do on its own.
+    /// Curve output this tick (input hysteresis already applied), before
+    /// the ramp/deadband. Reports the curve value even while an override is
+    /// active, so clients can show what the channel would do on its own.
     pub target_pwm: u8,
     /// "curve" (following its curve/mix policy) or "override" (pinned).
     pub mode: String,

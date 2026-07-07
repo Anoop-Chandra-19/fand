@@ -11,7 +11,7 @@
 //! get independent smoothing state — same as the old per-channel-input
 //! smoothers.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::time::Instant;
 
 use thiserror::Error;
@@ -123,6 +123,29 @@ impl CurveTree {
         }
     }
 
+    /// Every sensor name this tree reads — what the daemon must sample each
+    /// tick for `eval` to succeed. Sensors outside this set (for any of a
+    /// channel's trees) need not be read at all.
+    pub fn sensors(&self) -> BTreeSet<&str> {
+        let mut out = BTreeSet::new();
+        self.collect_sensors(&mut out);
+        out
+    }
+
+    fn collect_sensors<'a>(&'a self, out: &mut BTreeSet<&'a str>) {
+        match self {
+            CurveTree::Graph { sensor, .. } => {
+                out.insert(sensor.as_str());
+            }
+            CurveTree::Mix { members, .. } => {
+                for m in members {
+                    m.collect_sensors(out);
+                }
+            }
+            CurveTree::Flat { .. } => {}
+        }
+    }
+
     /// One tick: push temps through each graph node's smoother, gate through
     /// its hysteresis filter, interpolate, combine mix outputs. `&mut`
     /// because smoothing and hysteresis are stateful. `now` drives the
@@ -214,6 +237,16 @@ mod tests {
         let curves = BTreeMap::from([("f".into(), CurveConfig::Flat(FlatCurve { pwm: 128 }))]);
         let mut tree = CurveTree::build(&curves, "f", 1).unwrap();
         assert_eq!(tree.eval(&temps(&[]), Instant::now()).unwrap(), 128);
+    }
+
+    #[test]
+    fn sensors_lists_every_graph_sensor_in_the_tree() {
+        let tree = CurveTree::build(&case_curves(), "case_mix", 1).unwrap();
+        assert_eq!(tree.sensors(), BTreeSet::from(["cpu", "gpu"]));
+
+        let curves = BTreeMap::from([("f".into(), CurveConfig::Flat(FlatCurve { pwm: 128 }))]);
+        let flat = CurveTree::build(&curves, "f", 1).unwrap();
+        assert!(flat.sensors().is_empty());
     }
 
     #[test]

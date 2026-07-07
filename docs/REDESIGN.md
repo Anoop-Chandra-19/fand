@@ -43,7 +43,7 @@ hwmon_name = "nct6799"
 curve = "case_mix"                  # one curve, always
 min_pwm = 70
 smoothing_seconds = 5
-# max_step_up / max_step_down / deadband / zero_rpm / kick_* unchanged
+# max_step_up / max_step_down / deadband unchanged
 # offset_pwm = 0                    # phase 8b, per-channel bias
 ```
 
@@ -120,14 +120,81 @@ never silently replace it — GUI and fanctl must show the function explicitly
   reset on retreat/direction flip; reload resets; engine-level wiring.
 - **8b — trigger curve + per-channel offset.** Trigger: {idle_temp, idle_pwm,
   load_temp, load_pwm, response_seconds}, latches between thresholds.
-  **Forbidden on pwm1** (same validation class as zero_rpm); idle_pwm below
-  MIN_PWM_FLOOR requires the channel's zero_rpm opt-in. Offset: signed add
-  post-curve, pre-clamp — clamp order stays min_pwm..255.
+  **Forbidden on pwm1** (same validation class as the pump floor); idle_pwm
+  may never go below MIN_PWM_FLOOR — zero-RPM mode no longer exists (see the
+  hardening pass below), fans never stop. Offset: signed add post-curve,
+  pre-clamp — clamp order stays min_pwm..255.
 - **8c — `fanctl calibrate <channel>`** (deferred until wanted). Interactive
-  sweep to find real stop/start duties to *suggest* min_pwm/kick values.
+  sweep to find real stall/start duties to *suggest* min_pwm values.
   Hard gates: refuses pwm1 outright (pump inline); requires `--i-know`
   confirmation; overrides expire via existing TTL mechanism; restores curve
   mode on any error/^C. Never runs unattended.
+
+### Post-8a hardening (2026-07-06, external review findings) ✅ code complete
+
+Applied after a code review of the phase-7/8a work; all in the cutover scope:
+
+- **Zero-RPM mode removed outright** (Anoop's decision): it existed to mimic
+  NVIDIA's idle fan stop, but the GPU's driver already does that and fand
+  never controls GPU fans — motherboard-header fans should always run.
+  `zero_rpm`/`kick_pwm`/`kick_seconds` are gone from schema, ramp, engine,
+  channel_edit, GUI; an old config carrying them fails at parse.
+- **pwm1 pump floor is daemon-enforced**: `Config::validate` rejects
+  min_pwm < 80 on pwm1 (`PUMP_CHANNEL`/`PUMP_MIN_PWM_FLOOR` in fand-core),
+  closing the fanctl/hand-edit/SIGHUP bypass around the old GUI-only clamp.
+- **Reload can no longer orphan a dropped channel**: if restoring firmware
+  auto on a channel the new config drops fails, it is tracked as an
+  `UnrestoredChannel` (name + pwm/enable paths) whose enable path stays on
+  the failsafe guard's restore list — so the "every exit restores auto"
+  invariant holds even through failed hand-backs. (The third round below
+  hardens this further: immediate 255 park, reload-time retry, re-add
+  cleanup.)
+- **Only tree-referenced sensors are read**: engine build resolves curve
+  trees first and initializes/reads exactly the sensors they reference
+  (`CurveTree::sensors()`), so an unused sensor can't block startup or
+  trip the failsafe.
+- `deny_unknown_fields` on Config/ChannelConfig; stale `target_pwm` doc
+  comment in fand-proto fixed.
+
+A second review round (same day) added:
+
+- **Ramp floor bug (pre-existing, critical):** the deadband check could hold
+  a pwm *below* min_pwm forever (firmware hands over at 78, pwm1 floor 80,
+  deadband 3 ⇒ stuck at 78). The deadband now never applies while current
+  is under the floor.
+- **Hot reload refuses hardware re-binding:** keeping `[channels.pwm2]` but
+  changing its `hwmon_name` is a different fan — it would skip the liveness
+  probe and strand the old header in manual mode. Reload bails ("restart
+  fand instead") before touching hardware.
+- **Aborted-reload rollback failures are tracked:** if switching a batch of
+  new channels fails partway, rollback restores of already-switched ones
+  can themselves fail — those now join `unrestored` (name + pwm path +
+  enable path) like failed drops.
+- **failsafe() covers unrestored channels:** stuck-manual channels get
+  driven to 255 alongside live ones (they're at our last-written duty
+  otherwise, and the exit restore might fail again).
+- `SensorConfig` restructured to newtype variants (like `CurveConfig`) so
+  its payload structs carry `deny_unknown_fields` too; parse-rejection
+  tests prove the attribute fires through the internally-tagged enum.
+- CLAUDE.md mix invariant reworded to match phase 7: the invariant is
+  *outputs-not-temperatures*; max is default, min/average are explicit
+  opt-ins clients must display.
+
+A third round refined the `unrestored` machinery itself:
+
+- **Stuck channels are parked at 255 immediately** (`park_unrestored`) when
+  a hand-back fails, not only on a later failsafe — their last curve duty
+  could be idle-quiet and nobody is driving them anymore.
+- **Every reload retries the hand-back** of carried unrestored entries and
+  drops the ones that succeed — the daemon self-heals instead of waiting
+  for process exit.
+- **Re-adding a stuck channel reclaims it**: the add path removes matching
+  entries, which the retry made mandatory (a stale entry would otherwise
+  hand a just-reclaimed channel back to firmware mid-reload).
+- Both failure branches (dropped-channel hand-back, aborted-reload
+  rollback) now share `park_unrestored`, so the rollback branch — whose
+  exact I/O failure sequence can't be forced in tests — runs the same code
+  the drop-path tests exercise.
 
 ## Phase 9 — GUI shell goes native (CSD + adwaita foundation)
 
@@ -157,8 +224,8 @@ never silently replace it — GUI and fanctl must show the function explicitly
   curves, member list + function for mix, single slider for flat; hysteresis
   controls once 8a ships.
 - Channel properties dialog: boxed-list rows, instant apply through existing
-  validation; zero-RPM as expander row (locked with explanatory subtitle on
-  pwm1); min_pwm spin row hard-floored at 60/80 per invariants.
+  validation; min_pwm spin row hard-floored at 60/80 per invariants (no
+  zero-RPM controls — the mode was removed in the post-8a hardening pass).
 - Preferences dialog (app-level only): tick interval, appearance. About
   dialog.
 - Feedback: toast on apply; warning banner while an override is active or

@@ -17,7 +17,7 @@ use std::time::{Duration, Instant};
 
 use anyhow::{bail, Context, Result};
 use fand_core::config::SensorConfig;
-use fand_core::{window_ticks, Config, CurveTree, Kick, Ramp, RampConfig};
+use fand_core::{window_ticks, Config, CurveTree, Ramp, RampConfig};
 use fand_proto::{ChannelStatus, Command, Response, ResponseData, Status};
 
 use crate::failsafe::SharedPaths;
@@ -52,9 +52,8 @@ struct Channel {
     ramp: Ramp,
     last_written: Option<u8>,
     /// Copied from config for override validation: the lowest PWM a client
-    /// may pin this channel to (0 only when zero_rpm is opted in).
+    /// may pin this channel to.
     min_pwm: u8,
-    zero_rpm: bool,
 }
 
 /// A client-requested pin: the channel follows `pwm` (through the ramp)
@@ -63,6 +62,35 @@ struct Channel {
 struct Override {
     pwm: u8,
     expires_at: Instant,
+}
+
+/// A channel stuck in manual mode after a failed hand-back to firmware
+/// auto (dropped by a reload, or rolled back out of an aborted one).
+/// Tracked by raw paths because its HwmonDevice may no longer be part of
+/// the engine.
+#[derive(Debug, Clone, PartialEq)]
+struct UnrestoredChannel {
+    name: String,
+    pwm_path: PathBuf,
+    enable_path: PathBuf,
+}
+
+/// A hand-back to firmware auto failed: the channel is stuck in manual
+/// mode with nobody driving it. Park it at full blast immediately (fail
+/// high — its last curve duty could be idle-quiet) and return the entry
+/// that keeps it on the exit restore list.
+fn park_unrestored(name: &str, dev: &HwmonDevice, pwm_index: u32) -> UnrestoredChannel {
+    match dev.write_pwm(pwm_index, FAILSAFE_PWM) {
+        Ok(()) => eprintln!(
+            "fand: {name}: stuck in manual mode — parked at pwm {FAILSAFE_PWM} until restored"
+        ),
+        Err(e) => eprintln!("fand: FAILED to park unrestored {name} at pwm {FAILSAFE_PWM}: {e:#}"),
+    }
+    UnrestoredChannel {
+        name: name.to_string(),
+        pwm_path: dev.pwm_path(pwm_index),
+        enable_path: dev.pwm_enable_path(pwm_index),
+    }
 }
 
 /// Longest allowed override TTL; a forgotten override must always hand
@@ -85,6 +113,12 @@ pub struct Engine {
     /// Restore-on-exit list shared with the failsafe guard and panic hook;
     /// None in dry-run. Reload updates it when the channel set changes.
     failsafe_paths: Option<SharedPaths>,
+    /// Channels we switched to manual but failed to hand back to firmware
+    /// auto. Their enable paths stay on the guard's restore list until
+    /// process exit — a channel we switched to manual must never fall off
+    /// that list — and `failsafe()` drives their pwm to full alongside the
+    /// live channels.
+    unrestored: Vec<UnrestoredChannel>,
     /// The file `ReloadConfig` re-reads; None when the engine was built
     /// from a string only (tests).
     config_path: Option<PathBuf>,
@@ -106,8 +140,8 @@ impl Engine {
 
     /// `from_config` plus a probe exemption: channels in
     /// `already_controlled` skip the 0-RPM liveness check, because during a
-    /// reload *we* hold them — a zero-RPM fan we parked legitimately reads
-    /// 0 and must not be mistaken for a dead header.
+    /// reload *we* hold them — "0 RPM under firmware control means a dead
+    /// header" only applies to channels firmware still controls.
     fn build(
         cfg: &Config,
         toml_text: &str,
@@ -115,13 +149,32 @@ impl Engine {
         dry_run: bool,
         already_controlled: &BTreeSet<String>,
     ) -> Result<Self> {
+        let tick_seconds = cfg.daemon.tick_seconds;
+
+        // Resolve every channel's curve tree first (pure — no hardware
+        // touched): the trees decide which sensors the daemon reads at all.
+        // A configured-but-unreferenced sensor must neither block startup
+        // nor be able to trip the failsafe.
+        let mut trees: BTreeMap<String, CurveTree> = BTreeMap::new();
+        for (name, ch) in &cfg.channels {
+            let window = window_ticks(ch.smoothing_seconds, tick_seconds);
+            let tree = CurveTree::build(&cfg.curves, &ch.curve, window)
+                .with_context(|| format!("channel `{name}`: resolving curve `{}`", ch.curve))?;
+            trees.insert(name.clone(), tree);
+        }
+        let referenced: BTreeSet<String> = trees
+            .values()
+            .flat_map(|t| t.sensors().into_iter().map(str::to_string))
+            .collect();
+
         let mut devices = BTreeMap::new();
         let referenced_chips = cfg
             .sensors
-            .values()
-            .filter_map(|s| match s {
-                SensorConfig::Hwmon { hwmon_name, .. } => Some(hwmon_name),
-                SensorConfig::Nvml { .. } => None,
+            .iter()
+            .filter(|(name, _)| referenced.contains(name.as_str()))
+            .filter_map(|(_, s)| match s {
+                SensorConfig::Hwmon(h) => Some(&h.hwmon_name),
+                SensorConfig::Nvml(_) => None,
             })
             .chain(cfg.channels.values().map(|ch| &ch.hwmon_name));
         for name in referenced_chips {
@@ -130,30 +183,28 @@ impl Engine {
             }
         }
 
-        let needs_nvml = cfg
-            .sensors
-            .values()
-            .any(|s| matches!(s, SensorConfig::Nvml { .. }));
+        let needs_nvml = cfg.sensors.iter().any(|(name, s)| {
+            referenced.contains(name.as_str()) && matches!(s, SensorConfig::Nvml(_))
+        });
         let gpu = if needs_nvml { Some(Gpu::init()?) } else { None };
 
         let sensors = cfg
             .sensors
             .iter()
+            .filter(|(name, _)| referenced.contains(name.as_str()))
             .map(|(name, s)| {
                 let source = match s {
-                    SensorConfig::Hwmon { hwmon_name, input } => SensorSource::Hwmon {
-                        hwmon_name: hwmon_name.clone(),
-                        input: input.clone(),
+                    SensorConfig::Hwmon(h) => SensorSource::Hwmon {
+                        hwmon_name: h.hwmon_name.clone(),
+                        input: h.input.clone(),
                     },
-                    SensorConfig::Nvml { device_index } => SensorSource::Nvml {
-                        device_index: *device_index,
+                    SensorConfig::Nvml(n) => SensorSource::Nvml {
+                        device_index: n.device_index,
                     },
                 };
                 (name.clone(), source)
             })
             .collect();
-
-        let tick_seconds = cfg.daemon.tick_seconds;
         let mut channels = Vec::new();
         for (name, ch) in &cfg.channels {
             let pwm_index: u32 = name
@@ -174,25 +225,9 @@ impl Engine {
                 );
             }
 
-            let window = window_ticks(ch.smoothing_seconds, tick_seconds);
-            let tree = CurveTree::build(&cfg.curves, &ch.curve, window)
-                .with_context(|| format!("channel `{name}`: resolving curve `{}`", ch.curve))?;
-
-            let kick = if ch.zero_rpm {
-                Some(Kick {
-                    pwm: ch
-                        .kick_pwm
-                        .with_context(|| format!("channel `{name}`: zero_rpm without kick_pwm"))?,
-                    ticks: window_ticks(
-                        ch.kick_seconds.with_context(|| {
-                            format!("channel `{name}`: zero_rpm without kick_seconds")
-                        })?,
-                        tick_seconds,
-                    ) as u32,
-                })
-            } else {
-                None
-            };
+            let tree = trees
+                .remove(name)
+                .expect("tree was built for every channel above");
 
             // Start the ramp from whatever duty firmware left the fan at,
             // so taking over does not step the speed.
@@ -205,7 +240,6 @@ impl Engine {
                     max_step_up: ch.max_step_up,
                     max_step_down: ch.max_step_down,
                     deadband: ch.deadband,
-                    kick,
                 },
                 initial,
             );
@@ -222,7 +256,6 @@ impl Engine {
                 ramp,
                 last_written: None,
                 min_pwm: ch.min_pwm,
-                zero_rpm: ch.zero_rpm,
             });
         }
 
@@ -241,6 +274,7 @@ impl Engine {
             config_toml: toml_text.to_string(),
             hwmon_root: hwmon_root.to_path_buf(),
             failsafe_paths: None,
+            unrestored: Vec::new(),
             config_path: None,
         })
     }
@@ -257,12 +291,20 @@ impl Engine {
     }
 
     /// pwmN_enable paths for every controlled channel — what the failsafe
-    /// guard and panic hook must restore.
+    /// guard and panic hook must restore. Includes channels a reload
+    /// dropped but failed to hand back: those are still in manual mode.
     pub fn enable_paths(&self) -> Vec<PathBuf> {
-        self.channels
+        let mut paths: Vec<PathBuf> = self
+            .channels
             .iter()
             .map(|ch| self.devices[&ch.hwmon_name].pwm_enable_path(ch.pwm_index))
-            .collect()
+            .collect();
+        for u in &self.unrestored {
+            if !paths.contains(&u.enable_path) {
+                paths.push(u.enable_path.clone());
+            }
+        }
+        paths
     }
 
     /// Switch configured channels to manual control. Call only after the
@@ -310,6 +352,24 @@ impl Engine {
             self.channels.iter().map(|c| c.name.clone()).collect();
         let mut new = Engine::build(&cfg, toml_text, &self.hwmon_root, self.dry_run, &controlled)?;
 
+        // A kept channel must keep its hardware binding: "pwm2" on a
+        // different chip is a different fan — treating it as the same one
+        // would skip its liveness probe and strand the old header in
+        // manual mode. (Nothing written to hardware yet; safe to bail.)
+        for nch in &new.channels {
+            if let Some(och) = self.channels.iter().find(|c| c.name == nch.name) {
+                if och.hwmon_name != nch.hwmon_name {
+                    bail!(
+                        "channel `{}`: hwmon_name changed (`{}` → `{}`) — hardware bindings \
+                         cannot change across a hot reload; restart fand instead",
+                        nch.name,
+                        och.hwmon_name,
+                        nch.hwmon_name
+                    );
+                }
+            }
+        }
+
         if let Some(shared) = &self.failsafe_paths {
             let mut union = self.enable_paths();
             for p in new.enable_paths() {
@@ -336,11 +396,27 @@ impl Engine {
                 Ok(()) => {
                     eprintln!("fand: taking manual control of {} (reload)", ch.name);
                     switched.push(i);
+                    // This header is ours again: any stale stuck-manual
+                    // entry for it must go, or the retry below would hand
+                    // a channel we just took over back to firmware.
+                    let enable_path = dev.pwm_enable_path(ch.pwm_index);
+                    self.unrestored.retain(|u| u.enable_path != enable_path);
                 }
                 Err(e) => {
                     for &j in &switched {
                         let c = &new.channels[j];
-                        let _ = new.devices[&c.hwmon_name].write_pwm_enable(c.pwm_index, FIRMWARE_AUTO);
+                        let dev = &new.devices[&c.hwmon_name];
+                        if let Err(e2) = dev.write_pwm_enable(c.pwm_index, FIRMWARE_AUTO) {
+                            eprintln!(
+                                "fand: FAILED to roll back new channel {} to firmware auto: \
+                                 {e2:#} — keeping it on the exit restore list",
+                                c.name
+                            );
+                            let u = park_unrestored(&c.name, dev, c.pwm_index);
+                            if !self.unrestored.contains(&u) {
+                                self.unrestored.push(u);
+                            }
+                        }
                     }
                     if let Some(shared) = &self.failsafe_paths {
                         shared.set(self.enable_paths());
@@ -356,8 +432,28 @@ impl Engine {
             }
         }
 
-        // Hand back channels the new config drops.
+        // Hand back channels the new config drops. A failed hand-back
+        // leaves real hardware in manual mode, so the channel's enable
+        // path must survive the switch to `new` below — otherwise no exit
+        // path would ever restore it.
         let new_names: BTreeSet<&str> = new.channels.iter().map(|c| c.name.as_str()).collect();
+        let mut unrestored = std::mem::take(&mut self.unrestored);
+
+        // Any reload is a fresh chance to hand earlier stuck channels back
+        // to firmware (re-added ones were already removed above).
+        unrestored.retain(|u| {
+            match std::fs::write(&u.enable_path, FIRMWARE_AUTO.to_string()) {
+                Ok(()) => {
+                    eprintln!("fand: {}: firmware auto restored on retry", u.name);
+                    false
+                }
+                Err(e) => {
+                    eprintln!("fand: {}: still stuck in manual mode: {e:#}", u.name);
+                    true
+                }
+            }
+        });
+
         for ch in &self.channels {
             if new_names.contains(ch.name.as_str()) {
                 continue;
@@ -365,24 +461,33 @@ impl Engine {
             if self.dry_run {
                 eprintln!("fand: [dry-run] would restore firmware auto on {}", ch.name);
             } else {
-                match self.devices[&ch.hwmon_name].write_pwm_enable(ch.pwm_index, FIRMWARE_AUTO) {
+                let dev = &self.devices[&ch.hwmon_name];
+                match dev.write_pwm_enable(ch.pwm_index, FIRMWARE_AUTO) {
                     Ok(()) => eprintln!(
                         "fand: {}: dropped from config — firmware auto restored",
                         ch.name
                     ),
-                    Err(e) => eprintln!(
-                        "fand: FAILED to restore firmware auto on dropped channel {}: {e:#}",
-                        ch.name
-                    ),
+                    Err(e) => {
+                        eprintln!(
+                            "fand: FAILED to restore firmware auto on dropped channel {}: {e:#} \
+                             — keeping it on the exit restore list",
+                            ch.name
+                        );
+                        let u = park_unrestored(&ch.name, dev, ch.pwm_index);
+                        if !unrestored.contains(&u) {
+                            unrestored.push(u);
+                        }
+                    }
                 }
             }
         }
+        new.unrestored = unrestored;
 
         // Overrides survive when their channel still exists and their pin
         // is still legal under the new floors.
         for (name, o) in std::mem::take(&mut self.overrides) {
             match new.channels.iter().find(|c| c.name == name) {
-                Some(ch) if o.pwm >= (if ch.zero_rpm { 0 } else { ch.min_pwm }) => {
+                Some(ch) if o.pwm >= ch.min_pwm => {
                     new.overrides.insert(name, o);
                 }
                 _ => eprintln!("fand: {name}: active override dropped by config reload"),
@@ -542,11 +647,11 @@ impl Engine {
 
     /// Validate and store an override. The floor check is the safety-
     /// critical part: a channel can never be pinned below its min_pwm
-    /// (below 0 RPM territory for the pwm1 pump) unless it explicitly
-    /// opted into zero_rpm. Returns the clamped TTL actually applied.
+    /// (below 0 RPM territory for the pwm1 pump). Returns the clamped TTL
+    /// actually applied.
     fn set_override(&mut self, channel: &str, pwm: u8, ttl_seconds: u64) -> Result<u64> {
         let ch = self.find_channel(channel)?;
-        let floor = if ch.zero_rpm { 0 } else { ch.min_pwm };
+        let floor = ch.min_pwm;
         if pwm < floor {
             bail!(
                 "pwm {pwm} is below channel `{channel}`'s floor {floor} — refusing \
@@ -654,6 +759,14 @@ impl Engine {
                 eprintln!("fand: FAILED failsafe write on {}: {e:#}", ch.name);
             }
         }
+        // Channels stuck in manual mode after a failed hand-back are still
+        // ours: if the exit restore fails again they'd otherwise sit at
+        // their last duty forever, so park them at full blast too.
+        for u in &self.unrestored {
+            if let Err(e) = std::fs::write(&u.pwm_path, FAILSAFE_PWM.to_string()) {
+                eprintln!("fand: FAILED failsafe write on unrestored {}: {e:#}", u.name);
+            }
+        }
     }
 }
 
@@ -703,6 +816,7 @@ fn read_temps(
 mod tests {
     use super::*;
     use crate::failsafe::FailsafeGuard;
+    use std::os::unix::fs::PermissionsExt;
     use std::fs;
 
     /// Fake /sys/class/hwmon with an nct6799 (fan1 + fan2 live) and a
@@ -998,22 +1112,10 @@ mod tests {
     fn override_below_floor_is_rejected() {
         let root = fake_sysfs();
         let mut e = engine(&root);
-        // TEST_CONFIG pwm2 has min_pwm 70 and no zero_rpm.
+        // TEST_CONFIG pwm2 has min_pwm 70.
         let err = e.set_override("pwm2", 50, 60).unwrap_err();
         assert!(err.to_string().contains("floor 70"), "{err:#}");
         assert!(e.overrides.is_empty());
-    }
-
-    #[test]
-    fn override_to_zero_allowed_only_with_zero_rpm() {
-        let root = fake_sysfs();
-        let zero_rpm_config = TEST_CONFIG.replace(
-            "min_pwm = 70",
-            "min_pwm = 70\nzero_rpm = true\nkick_pwm = 100\nkick_seconds = 4",
-        );
-        let cfg = Config::from_toml_str(&zero_rpm_config).unwrap();
-        let mut e = Engine::from_config(&cfg, &zero_rpm_config, root.path(), false).unwrap();
-        e.set_override("pwm2", 0, 60).expect("zero_rpm channel may be pinned to 0");
     }
 
     #[test]
@@ -1124,12 +1226,12 @@ mod tests {
     }
 
     #[test]
-    fn reload_zero_rpm_on_controlled_channel_is_not_a_dead_header() {
+    fn reload_zero_read_on_controlled_channel_is_not_a_dead_header() {
         let root = fake_sysfs();
         let mut e = engine(&root);
         e.take_control().unwrap();
-        // We hold the channel and (hypothetically) parked it: 0 RPM is
-        // legitimate and must not fail the reload probe.
+        // We hold the channel, so a 0 tach read (e.g. a transient glitch)
+        // says nothing about the header and must not fail the reload probe.
         fs::write(root.path().join("hwmon0/fan2_input"), "0\n").unwrap();
         e.reload(TEST_CONFIG).unwrap();
     }
@@ -1161,6 +1263,176 @@ mod tests {
 
         e.reload(TEST_CONFIG).unwrap();
         assert!(!shared.snapshot().contains(&pwm1_path));
+    }
+
+    #[test]
+    fn unreferenced_sensor_is_neither_resolved_nor_read() {
+        let root = fake_sysfs();
+        // A defined sensor on a chip that doesn't exist — harmless as long
+        // as no channel's curve tree reads it.
+        let toml = format!(
+            "{TEST_CONFIG}\n[sensors.unused]\nkind = \"hwmon\"\nhwmon_name = \"nochip\"\ninput = \"temp1_input\"\n"
+        );
+        let cfg = Config::from_toml_str(&toml).unwrap();
+        let mut e = Engine::from_config(&cfg, &toml, root.path(), false)
+            .expect("unreferenced sensor must not block startup");
+        let status = e.tick_once().expect("unreferenced sensor must not be read");
+        assert!(status.temps.contains_key("cpu"));
+        assert!(!status.temps.contains_key("unused"));
+    }
+
+    #[test]
+    fn reload_failed_handback_keeps_channel_on_restore_list() {
+        let root = fake_sysfs();
+        let cfg = Config::from_toml_str(TEST_CONFIG_TWO_CHANNELS).unwrap();
+        let mut e =
+            Engine::from_config(&cfg, TEST_CONFIG_TWO_CHANNELS, root.path(), false).unwrap();
+        let shared = SharedPaths::new(e.enable_paths());
+        e.set_failsafe_paths(shared.clone());
+        e.take_control().unwrap();
+
+        // Make the pwm1_enable write fail, then drop pwm1 from the config.
+        let pwm1_path = root.path().join("hwmon0/pwm1_enable");
+        let mut perms = fs::metadata(&pwm1_path).unwrap().permissions();
+        perms.set_readonly(true);
+        fs::set_permissions(&pwm1_path, perms).unwrap();
+
+        e.reload(TEST_CONFIG).unwrap();
+        assert_eq!(read(&root, "pwm1_enable"), "1", "still stuck in manual mode");
+        assert_eq!(
+            read(&root, "pwm1"),
+            "255",
+            "stuck channel is parked at full blast immediately"
+        );
+        assert!(
+            shared.snapshot().contains(&pwm1_path),
+            "unrestorable channel must stay on the guard's restore list"
+        );
+
+        // The path survives further reloads while the hand-back keeps
+        // failing (each reload retries the restore).
+        e.reload(TEST_CONFIG).unwrap();
+        assert_eq!(read(&root, "pwm1_enable"), "1");
+        assert!(shared.snapshot().contains(&pwm1_path));
+
+        // And the failsafe covers the stuck channel like the live ones.
+        fs::write(root.path().join("hwmon0/pwm1"), "128\n").unwrap();
+        e.failsafe();
+        assert_eq!(read(&root, "pwm1"), "255");
+    }
+
+    #[test]
+    fn reload_retries_handback_of_stuck_channels() {
+        let root = fake_sysfs();
+        let cfg = Config::from_toml_str(TEST_CONFIG_TWO_CHANNELS).unwrap();
+        let mut e =
+            Engine::from_config(&cfg, TEST_CONFIG_TWO_CHANNELS, root.path(), false).unwrap();
+        let shared = SharedPaths::new(e.enable_paths());
+        e.set_failsafe_paths(shared.clone());
+        e.take_control().unwrap();
+
+        let pwm1_enable = root.path().join("hwmon0/pwm1_enable");
+        fs::set_permissions(&pwm1_enable, fs::Permissions::from_mode(0o444)).unwrap();
+        e.reload(TEST_CONFIG).unwrap(); // drops pwm1; hand-back fails
+
+        // Once the write works again, the next reload heals the channel.
+        fs::set_permissions(&pwm1_enable, fs::Permissions::from_mode(0o644)).unwrap();
+        e.reload(TEST_CONFIG).unwrap();
+        assert_eq!(read(&root, "pwm1_enable"), "5", "handed back on retry");
+        assert!(e.unrestored.is_empty());
+        assert!(!shared.snapshot().contains(&pwm1_enable));
+    }
+
+    #[test]
+    fn readding_a_stuck_channel_reclaims_it() {
+        let root = fake_sysfs();
+        let cfg = Config::from_toml_str(TEST_CONFIG_TWO_CHANNELS).unwrap();
+        let mut e =
+            Engine::from_config(&cfg, TEST_CONFIG_TWO_CHANNELS, root.path(), false).unwrap();
+        e.take_control().unwrap();
+
+        let pwm1_enable = root.path().join("hwmon0/pwm1_enable");
+        fs::set_permissions(&pwm1_enable, fs::Permissions::from_mode(0o444)).unwrap();
+        e.reload(TEST_CONFIG).unwrap(); // drops pwm1; hand-back fails
+        assert_eq!(e.unrestored.len(), 1);
+
+        // Re-adding the channel takes it over again — the stale entry must
+        // be dropped, and crucially the retry must NOT hand the channel
+        // back to firmware right after we reclaimed it.
+        fs::set_permissions(&pwm1_enable, fs::Permissions::from_mode(0o644)).unwrap();
+        e.reload(TEST_CONFIG_TWO_CHANNELS).unwrap();
+        assert_eq!(e.channels.len(), 2);
+        assert_eq!(read(&root, "pwm1_enable"), "1", "ours again, still manual");
+        assert!(e.unrestored.is_empty(), "stale entry cleaned on re-add");
+    }
+
+    #[test]
+    fn reload_rejects_hwmon_binding_change() {
+        let root = fake_sysfs();
+        // A second chip that also exposes a live fan2/pwm2.
+        let aux = root.path().join("hwmon2");
+        fs::create_dir(&aux).unwrap();
+        fs::write(aux.join("name"), "aux\n").unwrap();
+        fs::write(aux.join("fan2_input"), "800\n").unwrap();
+        fs::write(aux.join("pwm2"), "120\n").unwrap();
+        fs::write(aux.join("pwm2_enable"), "5\n").unwrap();
+
+        let mut e = engine(&root);
+        e.take_control().unwrap();
+
+        // Same channel name, different chip: refuse — the old header would
+        // be stranded in manual mode.
+        let moved = TEST_CONFIG.replace(
+            "[channels.pwm2]\n        hwmon_name = \"nct6799\"",
+            "[channels.pwm2]\n        hwmon_name = \"aux\"",
+        );
+        let err = e.reload(&moved).unwrap_err();
+        assert!(err.to_string().contains("hardware bindings"), "{err:#}");
+        assert_eq!(e.channels[0].hwmon_name, "nct6799", "old config still active");
+        assert_eq!(read(&root, "pwm2_enable"), "1", "old header still ours");
+        assert_eq!(
+            fs::read_to_string(aux.join("pwm2_enable")).unwrap(),
+            "5\n",
+            "new header untouched"
+        );
+    }
+
+    #[test]
+    fn aborted_reload_rolls_back_newly_switched_channels() {
+        let root = fake_sysfs();
+        // A third header on the nct so the reload adds two channels: pwm1
+        // switches fine, pwm3's enable write fails.
+        let nct = root.path().join("hwmon0");
+        fs::write(nct.join("fan3_input"), "700\n").unwrap();
+        fs::write(nct.join("pwm3"), "110\n").unwrap();
+        fs::write(nct.join("pwm3_enable"), "5\n").unwrap();
+        let pwm3_enable = nct.join("pwm3_enable");
+        let mut perms = fs::metadata(&pwm3_enable).unwrap().permissions();
+        perms.set_readonly(true);
+        fs::set_permissions(&pwm3_enable, perms).unwrap();
+
+        let mut e = engine(&root);
+        let shared = SharedPaths::new(e.enable_paths());
+        e.set_failsafe_paths(shared.clone());
+        e.take_control().unwrap();
+
+        let three = format!(
+            "{TEST_CONFIG_TWO_CHANNELS}
+        [channels.pwm3]
+        hwmon_name = \"nct6799\"
+        curve = \"c\"
+        min_pwm = 70
+        smoothing_seconds = 2
+    "
+        );
+        let err = e.reload(&three).unwrap_err();
+        assert!(err.to_string().contains("reload aborted"), "{err:#}");
+        assert_eq!(e.channels.len(), 1, "old config still active");
+        assert_eq!(read(&root, "pwm1_enable"), "5", "pwm1 rolled back to firmware");
+        assert!(
+            !shared.snapshot().contains(&nct.join("pwm1_enable")),
+            "cleanly rolled-back channel leaves the restore list"
+        );
     }
 
     #[test]

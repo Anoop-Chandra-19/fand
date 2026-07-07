@@ -38,7 +38,7 @@ function CurvesIcon() {
 }
 
 // Three sliders at different positions — mirrors the settings page's own
-// per-channel min_pwm/smoothing/zero_rpm rows, not a generic gear.
+// per-channel min_pwm/smoothing rows, not a generic gear.
 function SettingsIcon() {
   return (
     <svg width="16" height="16" viewBox="0 0 16 16" fill="none" aria-hidden="true">
