@@ -93,6 +93,15 @@ export function SettingsPage({ data, labels, setMinPwm, setSmoothingSeconds }: P
               min={1}
               onCommit={(v) => setSmoothingSeconds(channel, v)}
             />
+            {/* Read-only until the phase-10 editor gains a control. */}
+            {settings.offset_pwm !== 0 && (
+              <div className="flex items-center justify-between gap-3 text-[13px]">
+                <span className="text-dim">Curve offset</span>
+                <span>
+                  {settings.offset_pwm > 0 ? `+${settings.offset_pwm}` : settings.offset_pwm}
+                </span>
+              </div>
+            )}
           </article>
         );
       })}

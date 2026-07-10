@@ -5,7 +5,8 @@
 //! channel each tick:
 //!
 //! ```text
-//! sensor temps → CurveTree::eval (smoothing + graph/mix/flat) → Ramp::step → pwm
+//! sensor temps → CurveTree::eval (smoothing + graph/mix/flat/trigger)
+//!   → apply_offset → Ramp::step → pwm
 //! ```
 
 pub mod channel_edit;
@@ -16,6 +17,7 @@ pub mod eval;
 pub mod hysteresis;
 pub mod ramp;
 pub mod smoothing;
+pub mod trigger;
 
 pub use channel_edit::{set_channel_curve, set_min_pwm, set_smoothing_seconds, ChannelEditError};
 pub use config::{
@@ -29,5 +31,6 @@ pub use curve_edit::{
 };
 pub use eval::{CurveTree, EvalError, TreeError};
 pub use hysteresis::InputFilter;
-pub use ramp::{Ramp, RampConfig};
+pub use ramp::{apply_offset, Ramp, RampConfig};
 pub use smoothing::{window_ticks, RollingAverage};
+pub use trigger::TriggerLatch;

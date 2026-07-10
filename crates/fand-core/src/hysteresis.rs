@@ -191,7 +191,11 @@ mod tests {
         f.apply(54.0, base);
         assert_eq!(f.apply(58.0, base), 54.0, "dwell starts, not accepted yet");
         assert_eq!(f.apply(58.0, base + secs(2)), 54.0, "2s < 5s");
-        assert_eq!(f.apply(59.0, base + secs(6)), 59.0, "6s ≥ 5s: latest temp accepted");
+        assert_eq!(
+            f.apply(59.0, base + secs(6)),
+            59.0,
+            "6s ≥ 5s: latest temp accepted"
+        );
     }
 
     #[test]

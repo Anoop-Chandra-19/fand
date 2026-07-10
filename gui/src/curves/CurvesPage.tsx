@@ -81,6 +81,47 @@ function GraphCurveBody({
   );
 }
 
+// Read-only until the phase-10 editor gains trigger controls.
+function TriggerCurveBody({
+  info,
+  temps,
+}: {
+  info: Extract<CurveInfo, { kind: "trigger" }>;
+  temps: Record<string, number>;
+}) {
+  return (
+    <div className="flex flex-col gap-1 text-[13px]">
+      <div className="flex items-center gap-2">
+        <span className="text-dim">sensor</span>
+        <span>{info.sensor}</span>
+        {temps[info.sensor] !== undefined && (
+          <span className="text-dim tabular-nums">{temps[info.sensor].toFixed(1)} °C</span>
+        )}
+      </div>
+      <p className="text-dim">
+        idle <span className="tabular-nums">≤ {info.idle_temp} °C</span> →{" "}
+        <span className="tabular-nums">{dutyPercent(info.idle_pwm)}%</span> duty (pwm{" "}
+        <span className="tabular-nums">{info.idle_pwm}</span>)
+      </p>
+      <p className="text-dim">
+        load <span className="tabular-nums">≥ {info.load_temp} °C</span> →{" "}
+        <span className="tabular-nums">{dutyPercent(info.load_pwm)}%</span> duty (pwm{" "}
+        <span className="tabular-nums">{info.load_pwm}</span>)
+      </p>
+      <p className="text-dim">
+        {info.response_seconds > 0 ? (
+          <>
+            switches after <span className="tabular-nums">{info.response_seconds} s</span> past a
+            threshold
+          </>
+        ) : (
+          "switches instantly at the thresholds"
+        )}
+      </p>
+    </div>
+  );
+}
+
 function MixCurveBody({
   name,
   info,
@@ -260,6 +301,7 @@ export function CurvesPage({
                 (pwm <span className="tabular-nums">{info.pwm}</span>)
               </p>
             )}
+            {info.kind === "trigger" && <TriggerCurveBody info={info} temps={temps} />}
 
             {cardErrors[name] && <p className="text-xs text-error">{cardErrors[name]}</p>}
           </article>

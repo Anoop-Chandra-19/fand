@@ -28,7 +28,10 @@ pub enum CurveEditError {
     #[error("curve `{0}` already exists")]
     DuplicateCurve(String),
     #[error("curve `{curve}` is not a `{expected}` curve")]
-    WrongKind { curve: String, expected: &'static str },
+    WrongKind {
+        curve: String,
+        expected: &'static str,
+    },
     #[error("curve `{curve}` already contains member `{member}`")]
     DuplicateMember { curve: String, member: String },
     #[error("curve `{curve}` has no member `{member}`")]
@@ -124,11 +127,7 @@ pub fn set_graph_sensor(
 }
 
 /// Append `member` to a mix curve's `curves` list.
-pub fn add_mix_member(
-    toml_text: &str,
-    name: &str,
-    member: &str,
-) -> Result<String, CurveEditError> {
+pub fn add_mix_member(toml_text: &str, name: &str, member: &str) -> Result<String, CurveEditError> {
     let mut doc: DocumentMut = toml_text.parse()?;
     let curve = curve_of_kind(&mut doc, name, "mix")?;
     let members = curve
@@ -226,7 +225,10 @@ curves = [\"cpu\", \"gpu\"]
         assert!(out.contains("# curve comment stays"));
         assert!(out.contains("# trailing comment stays"));
         assert!(out.contains("points = [[30, 70], [60, 140], [85, 255]]"));
-        assert!(out.contains("[[35, 70], [80, 255]]"), "other curve untouched");
+        assert!(
+            out.contains("[[35, 70], [80, 255]]"),
+            "other curve untouched"
+        );
     }
 
     #[test]
@@ -241,7 +243,10 @@ curves = [\"cpu\", \"gpu\"]
     fn replace_curve_points_rejects_non_graph() {
         assert!(matches!(
             replace_curve_points(TOML, "case_mix", &[(30, 70)]),
-            Err(CurveEditError::WrongKind { expected: "graph", .. })
+            Err(CurveEditError::WrongKind {
+                expected: "graph",
+                ..
+            })
         ));
     }
 
@@ -298,7 +303,10 @@ curves = [\"cpu\", \"gpu\"]
     fn add_mix_member_rejects_graph_curve() {
         assert!(matches!(
             add_mix_member(TOML, "cpu", "gpu"),
-            Err(CurveEditError::WrongKind { expected: "mix", .. })
+            Err(CurveEditError::WrongKind {
+                expected: "mix",
+                ..
+            })
         ));
     }
 
@@ -306,7 +314,10 @@ curves = [\"cpu\", \"gpu\"]
     fn remove_mix_member_removes() {
         let out = remove_mix_member(TOML, "case_mix", "gpu").unwrap();
         assert!(out.contains("curves = [\"cpu\"]"));
-        assert!(out.contains("[curves.gpu]"), "the member curve itself stays");
+        assert!(
+            out.contains("[curves.gpu]"),
+            "the member curve itself stays"
+        );
     }
 
     #[test]

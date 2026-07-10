@@ -50,6 +50,20 @@ kind = "mix"
 function = "max"
 curves = ["cpu_case", "gpu_case"]
 
+# Trigger curve (any channel except pwm1 — a step function is wrong for the
+# pump). Two duties latched across a temperature deadband: idle below
+# idle_temp, load above load_temp, holding state in between so it never
+# hunts. A crossing must persist response_seconds before it flips. Bind it
+# to a channel to use it.
+#[curves.case_trigger]
+#kind = "trigger"
+#sensor = "cpu"
+#idle_temp = 45            # °C at/below which it latches to idle_pwm
+#idle_pwm = 90
+#load_temp = 65            # °C at/above which it latches to load_pwm
+#load_pwm = 200
+#response_seconds = 5      # a crossing must hold this long to flip (0 = instant)
+
 # pwm1: Arctic Liquid Freezer II 360 — pump + VRM fan + 3 rad fans all share
 # this one PWM signal; coolant thermal mass justifies the longer smoothing
 # window. Pump runs at its 800 RPM minimum below ~40% duty; firmware auto
@@ -72,3 +86,7 @@ min_pwm = 70
 smoothing_seconds = 5
 max_step_up = 10
 max_step_down = 3
+# Optional signed bias added to the curve output before the min_pwm..255
+# clamp — lets a channel share another's curve at a fixed offset. The floor
+# still wins, so a negative offset can never stall the fan. Default 0.
+#offset_pwm = -15

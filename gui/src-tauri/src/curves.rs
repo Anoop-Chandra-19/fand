@@ -12,7 +12,8 @@ use serde::Serialize;
 use crate::socket_path;
 
 /// Mirrors `fand_core::config::CurveConfig` for the frontend, minus the
-/// hysteresis fields (inert until phase 8a — not shown yet).
+/// graph hysteresis fields (edited in the curve editor, phase 10). Trigger
+/// curves are surfaced read-only until the phase-10 editor gains controls.
 #[derive(Debug, Clone, Serialize)]
 #[serde(tag = "kind", rename_all = "lowercase")]
 pub enum CurveInfo {
@@ -26,6 +27,14 @@ pub enum CurveInfo {
     },
     Flat {
         pwm: u16,
+    },
+    Trigger {
+        sensor: String,
+        idle_temp: f64,
+        idle_pwm: u16,
+        load_temp: f64,
+        load_pwm: u16,
+        response_seconds: u64,
     },
 }
 
@@ -53,6 +62,14 @@ pub(crate) fn payload_from_config(cfg: &fand_core::Config) -> CurveEditorPayload
                     members: m.curves.clone(),
                 },
                 CurveConfig::Flat(f) => CurveInfo::Flat { pwm: f.pwm },
+                CurveConfig::Trigger(t) => CurveInfo::Trigger {
+                    sensor: t.sensor.clone(),
+                    idle_temp: t.idle_temp,
+                    idle_pwm: t.idle_pwm,
+                    load_temp: t.load_temp,
+                    load_pwm: t.load_pwm,
+                    response_seconds: t.response_seconds,
+                },
             };
             (name.clone(), info)
         })
@@ -76,7 +93,10 @@ pub(crate) fn payload_from_config(cfg: &fand_core::Config) -> CurveEditorPayload
 /// Validates an edited config and sends it to the daemon, returning the
 /// fresh daemon-confirmed `Config` — shared by every write command here and
 /// in `settings.rs` so none of them repeat the validate/send sequence.
-pub(crate) fn apply_config(updated: String, client: &mut Client) -> Result<fand_core::Config, String> {
+pub(crate) fn apply_config(
+    updated: String,
+    client: &mut Client,
+) -> Result<fand_core::Config, String> {
     let cfg = fand_core::Config::from_toml_str(&updated).map_err(|e| e.to_string())?;
     client
         .request(Command::SetConfig { toml: updated })
@@ -105,7 +125,10 @@ pub fn get_curve_editor_data() -> Result<CurveEditorPayload, String> {
 /// daemon-confirmed payload so the frontend never has to guess what
 /// actually got applied.
 #[tauri::command]
-pub fn set_curve_points(name: String, points: Vec<(i32, u8)>) -> Result<CurveEditorPayload, String> {
+pub fn set_curve_points(
+    name: String,
+    points: Vec<(i32, u8)>,
+) -> Result<CurveEditorPayload, String> {
     let (mut client, current) = connect()?;
     let updated =
         fand_core::replace_curve_points(&current, &name, &points).map_err(|e| e.to_string())?;
@@ -138,8 +161,7 @@ pub fn set_graph_sensor(name: String, sensor: String) -> Result<CurveEditorPaylo
 #[tauri::command]
 pub fn add_mix_member(name: String, member: String) -> Result<CurveEditorPayload, String> {
     let (mut client, current) = connect()?;
-    let updated =
-        fand_core::add_mix_member(&current, &name, &member).map_err(|e| e.to_string())?;
+    let updated = fand_core::add_mix_member(&current, &name, &member).map_err(|e| e.to_string())?;
     apply(updated, &mut client)
 }
 

@@ -13,6 +13,13 @@ pub struct RampConfig {
     pub deadband: u8,
 }
 
+/// Add a signed per-channel offset to a curve output, clamped to 0..=255.
+/// This runs *before* the ramp's min_pwm floor, so the floor still wins —
+/// a negative offset can never push a fan below its minimum duty.
+pub fn apply_offset(raw: u8, offset: i16) -> u8 {
+    (i32::from(raw) + i32::from(offset)).clamp(0, 255) as u8
+}
+
 #[derive(Debug, Clone)]
 pub struct Ramp {
     cfg: RampConfig,
@@ -141,6 +148,18 @@ mod tests {
         assert_eq!(r.step(20), 60, "recovers to the floor, not held at 58");
         // At/above the floor the deadband behaves as usual again.
         assert_eq!(r.step(61), 60);
+    }
+
+    #[test]
+    fn offset_shifts_and_clamps() {
+        assert_eq!(apply_offset(100, 20), 120);
+        assert_eq!(apply_offset(100, -30), 70);
+        assert_eq!(apply_offset(250, 20), 255, "clamps at the top");
+        assert_eq!(
+            apply_offset(10, -50),
+            0,
+            "clamps at the bottom, not the floor"
+        );
     }
 
     #[test]

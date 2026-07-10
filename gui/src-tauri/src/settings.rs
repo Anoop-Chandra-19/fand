@@ -14,6 +14,8 @@ use crate::socket_path;
 pub struct ChannelSettings {
     pub min_pwm: u8,
     pub smoothing_seconds: u64,
+    /// Read-only until the phase-10 editor gains a control for it.
+    pub offset_pwm: i16,
 }
 
 fn payload_from_config(cfg: &fand_core::Config) -> BTreeMap<String, ChannelSettings> {
@@ -25,6 +27,7 @@ fn payload_from_config(cfg: &fand_core::Config) -> BTreeMap<String, ChannelSetti
                 ChannelSettings {
                     min_pwm: channel.min_pwm,
                     smoothing_seconds: channel.smoothing_seconds,
+                    offset_pwm: channel.offset_pwm,
                 },
             )
         })
@@ -40,7 +43,10 @@ pub fn get_channel_settings() -> Result<BTreeMap<String, ChannelSettings>, Strin
 }
 
 #[tauri::command]
-pub fn set_min_pwm(channel: String, min_pwm: u8) -> Result<BTreeMap<String, ChannelSettings>, String> {
+pub fn set_min_pwm(
+    channel: String,
+    min_pwm: u8,
+) -> Result<BTreeMap<String, ChannelSettings>, String> {
     let mut client = Client::connect(socket_path()).map_err(|e| e.to_string())?;
     let current = client.get_config().map_err(|e| e.to_string())?;
     let updated = fand_core::set_min_pwm(&current, &channel, min_pwm).map_err(|e| e.to_string())?;

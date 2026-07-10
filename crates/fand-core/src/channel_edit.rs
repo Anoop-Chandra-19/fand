@@ -45,7 +45,11 @@ pub fn set_channel_curve(
 }
 
 /// Set `min_pwm` on a channel.
-pub fn set_min_pwm(toml_text: &str, channel: &str, min_pwm: u8) -> Result<String, ChannelEditError> {
+pub fn set_min_pwm(
+    toml_text: &str,
+    channel: &str,
+    min_pwm: u8,
+) -> Result<String, ChannelEditError> {
     let mut doc: DocumentMut = toml_text.parse()?;
     let chan = channel_table(&mut doc, channel)?;
     chan["min_pwm"] = value(i64::from(min_pwm));
@@ -123,5 +127,4 @@ smoothing_seconds = 5
         assert!(out.contains("smoothing_seconds = 20"));
         assert!(out.contains("smoothing_seconds = 5"), "pwm2 untouched");
     }
-
 }

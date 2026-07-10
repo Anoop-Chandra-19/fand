@@ -10,7 +10,7 @@
 //! pump rides that header inline). Fans never stop: there is no zero-RPM
 //! mode.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
@@ -104,13 +104,15 @@ pub struct NvmlSensor {
 }
 
 /// A curve is graph (points evaluated at its own sensor), mix (combines
-/// other curves' *outputs* — never their temperatures), or flat (constant).
+/// other curves' *outputs* — never their temperatures), flat (constant), or
+/// trigger (latches between two duties across a temperature deadband).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "lowercase")]
 pub enum CurveConfig {
     Graph(GraphCurve),
     Mix(MixCurve),
     Flat(FlatCurve),
+    Trigger(TriggerCurve),
 }
 
 /// Points as written in TOML: whole-degree temps, pwm parsed wide (u16) so
@@ -174,6 +176,26 @@ pub struct FlatCurve {
     pub pwm: u16,
 }
 
+/// A two-state step curve (FanControl's "trigger"): idle duty below the
+/// deadband, load duty above it, latching in between so it never oscillates.
+/// The gap between `idle_temp` and `load_temp` is the hysteresis; a crossing
+/// must persist `response_seconds` before it flips. pwm parsed wide (u16)
+/// like graph points so out-of-range values reach validation.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct TriggerCurve {
+    pub sensor: String,
+    /// At or below this temp the curve latches to `idle_pwm`.
+    pub idle_temp: f64,
+    pub idle_pwm: u16,
+    /// At or above this temp the curve latches to `load_pwm`.
+    pub load_temp: f64,
+    pub load_pwm: u16,
+    /// Seconds a crossing must persist before the latch flips (0 = instant).
+    #[serde(default)]
+    pub response_seconds: u64,
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ChannelConfig {
@@ -189,6 +211,12 @@ pub struct ChannelConfig {
     pub max_step_down: u8,
     #[serde(default = "default_deadband")]
     pub deadband: u8,
+    /// Signed bias added to the curve output before the min_pwm..255 clamp
+    /// (lets two channels share one curve with a fixed offset). The clamp
+    /// order is unchanged, so a negative offset can never push a fan below
+    /// its floor.
+    #[serde(default)]
+    pub offset_pwm: i16,
 }
 
 #[derive(Debug, Error, PartialEq)]
@@ -223,8 +251,23 @@ pub enum ValidationError {
     MixCycle { curve: String },
     #[error("curve `{curve}`: flat pwm {pwm} out of range 0-255")]
     FlatPwmOutOfRange { curve: String, pwm: u16 },
+    #[error("curve `{curve}`: {field} pwm {pwm} out of range 0-255")]
+    TriggerPwmOutOfRange {
+        curve: String,
+        field: &'static str,
+        pwm: u16,
+    },
+    #[error("curve `{curve}`: idle_temp must be a finite value strictly below load_temp")]
+    TriggerThresholdsUnordered { curve: String },
     #[error("channel `{channel}`: unknown curve `{curve}`")]
     UnknownCurve { channel: String, curve: String },
+    #[error(
+        "channel `{channel}`: curve `{curve}` reaches a trigger curve — triggers are a \
+         step function and are forbidden on the pump channel (steady control only)"
+    )]
+    TriggerOnPumpChannel { channel: String, curve: String },
+    #[error("channel `{channel}`: offset_pwm {offset} out of range -255..=255")]
+    OffsetOutOfRange { channel: String, offset: i16 },
     #[error("channel `{channel}`: min_pwm {min_pwm} is below the stall floor {floor}")]
     MinPwmBelowFloor {
         channel: String,
@@ -244,7 +287,10 @@ pub enum ValidationError {
     ZeroStep { channel: String },
     #[error("channel `{channel}`: smoothing_seconds must be >= 1")]
     ZeroSmoothing { channel: String },
-    #[error("channel `{channel}`: name must be pwmN (matching the hwmon pwm file)")]
+    #[error(
+        "channel `{channel}`: name must be canonical pwmN with no leading zeros \
+         (matching the hwmon pwm file)"
+    )]
     BadChannelName { channel: String },
 }
 
@@ -286,6 +332,7 @@ impl Config {
                         });
                     }
                 }
+                CurveConfig::Trigger(t) => self.validate_trigger(name, t, &mut errs),
             }
         }
         self.detect_mix_cycles(&mut errs);
@@ -313,6 +360,18 @@ impl Config {
                     channel: name.clone(),
                     min_pwm: ch.min_pwm,
                     floor: MIN_PWM_FLOOR,
+                });
+            }
+            if name == PUMP_CHANNEL && self.reaches_trigger(&ch.curve) {
+                errs.push(ValidationError::TriggerOnPumpChannel {
+                    channel: name.clone(),
+                    curve: ch.curve.clone(),
+                });
+            }
+            if ch.offset_pwm.unsigned_abs() > 255 {
+                errs.push(ValidationError::OffsetOutOfRange {
+                    channel: name.clone(),
+                    offset: ch.offset_pwm,
                 });
             }
             if ch.max_step_up == 0 || ch.max_step_down == 0 {
@@ -405,6 +464,55 @@ impl Config {
         }
     }
 
+    fn validate_trigger(&self, name: &str, t: &TriggerCurve, errs: &mut Vec<ValidationError>) {
+        if !t.idle_temp.is_finite() || !t.load_temp.is_finite() || t.idle_temp >= t.load_temp {
+            errs.push(ValidationError::TriggerThresholdsUnordered {
+                curve: name.to_string(),
+            });
+        }
+        for (field, pwm) in [("idle", t.idle_pwm), ("load", t.load_pwm)] {
+            if pwm > 255 {
+                errs.push(ValidationError::TriggerPwmOutOfRange {
+                    curve: name.to_string(),
+                    field,
+                    pwm,
+                });
+            }
+        }
+        if !self.sensors.contains_key(&t.sensor) {
+            errs.push(ValidationError::CurveUnknownSensor {
+                curve: name.to_string(),
+                sensor: t.sensor.clone(),
+            });
+        }
+        if t.response_seconds > MAX_RESPONSE_SECONDS {
+            errs.push(ValidationError::BadHysteresis {
+                curve: name.to_string(),
+                field: "response_seconds",
+                max: MAX_RESPONSE_SECONDS as u32,
+            });
+        }
+    }
+
+    /// Whether any trigger curve is reachable from `root` (directly or
+    /// through mixes). A visited set makes this total even on a config with
+    /// mix cycles — validation collects every error and never stops early.
+    fn reaches_trigger(&self, root: &str) -> bool {
+        let mut stack = vec![root.to_string()];
+        let mut seen = BTreeSet::new();
+        while let Some(name) = stack.pop() {
+            if !seen.insert(name.clone()) {
+                continue;
+            }
+            match self.curves.get(&name) {
+                Some(CurveConfig::Trigger(_)) => return true,
+                Some(CurveConfig::Mix(m)) => stack.extend(m.curves.iter().cloned()),
+                _ => {}
+            }
+        }
+        false
+    }
+
     /// Depth-first walk over mix membership; any curve reachable from
     /// itself is reported once. Unknown members are skipped here — they get
     /// their own `MixUnknownCurve` error.
@@ -453,9 +561,15 @@ impl Config {
     }
 }
 
+/// Only canonical `pwmN` names pass — `pwm01` parses to the same physical
+/// index as `pwm1` but would dodge every string comparison against
+/// [`PUMP_CHANNEL`] (pump floor, trigger ban) and let two channel entries
+/// alias one header. Requiring the name to round-trip through its parsed
+/// index makes name equality mean physical-header equality.
 fn is_pwm_name(name: &str) -> bool {
     name.strip_prefix("pwm")
-        .is_some_and(|n| !n.is_empty() && n.bytes().all(|b| b.is_ascii_digit()))
+        .and_then(|n| n.parse::<u32>().ok())
+        .is_some_and(|n| name == format!("pwm{n}"))
 }
 
 #[cfg(test)]
@@ -577,7 +691,10 @@ mod tests {
 
     #[test]
     fn channel_unknown_curve_rejected() {
-        let toml_str = base_toml().replace("curve = \"c\"\n            min_pwm", "curve = \"nope\"\n            min_pwm");
+        let toml_str = base_toml().replace(
+            "curve = \"c\"\n            min_pwm",
+            "curve = \"nope\"\n            min_pwm",
+        );
         assert!(errors_of(&toml_str).iter().any(|e| matches!(
             e,
             ValidationError::UnknownCurve { curve, .. } if curve == "nope"
@@ -592,7 +709,10 @@ mod tests {
             "hysteresis_down = nan",
             "response_seconds = 4000",
         ] {
-            let toml_str = base_toml().replace("kind = \"graph\"", &format!("kind = \"graph\"\n            {bad}"));
+            let toml_str = base_toml().replace(
+                "kind = \"graph\"",
+                &format!("kind = \"graph\"\n            {bad}"),
+            );
             assert!(
                 errors_of(&toml_str)
                     .iter()
@@ -612,13 +732,19 @@ mod tests {
     }
 
     fn with_mix(base: &str, mix: &str) -> String {
-        base.replace("[channels.pwm2]", &format!("{mix}\n            [channels.pwm2]"))
+        base.replace(
+            "[channels.pwm2]",
+            &format!("{mix}\n            [channels.pwm2]"),
+        )
     }
 
     #[test]
     fn mix_curve_accepted_and_channel_can_bind_it() {
         let toml_str = with_mix(
-            &base_toml().replace("curve = \"c\"\n            min_pwm", "curve = \"m\"\n            min_pwm"),
+            &base_toml().replace(
+                "curve = \"c\"\n            min_pwm",
+                "curve = \"m\"\n            min_pwm",
+            ),
             "[curves.m]\n            kind = \"mix\"\n            curves = [\"c\"]",
         );
         let cfg = Config::from_toml_str(&toml_str).unwrap();
@@ -681,7 +807,11 @@ mod tests {
             "[curves.a]\n            kind = \"mix\"\n            curves = [\"b\"]\n            [curves.b]\n            kind = \"mix\"\n            curves = [\"a\"]",
         );
         let errs = errors_of(&toml_str);
-        assert!(errs.iter().any(|e| matches!(e, ValidationError::MixCycle { .. })), "{errs:?}");
+        assert!(
+            errs.iter()
+                .any(|e| matches!(e, ValidationError::MixCycle { .. })),
+            "{errs:?}"
+        );
     }
 
     #[test]
@@ -705,10 +835,116 @@ mod tests {
             &base_toml(),
             "[curves.f]\n            kind = \"flat\"\n            pwm = 300",
         );
-        assert!(errors_of(&bad).iter().any(|e| matches!(
+        assert!(errors_of(&bad)
+            .iter()
+            .any(|e| matches!(e, ValidationError::FlatPwmOutOfRange { pwm: 300, .. })));
+    }
+
+    fn trigger_block(extra: &str) -> String {
+        format!(
+            "[curves.t]\n            kind = \"trigger\"\n            sensor = \"cpu\"\n            \
+             idle_temp = 40\n            idle_pwm = 90\n            load_temp = 60\n            \
+             load_pwm = 200\n{extra}"
+        )
+    }
+
+    #[test]
+    fn trigger_curve_accepted_and_bindable() {
+        let toml_str = with_mix(
+            &base_toml().replace(
+                "curve = \"c\"\n            min_pwm",
+                "curve = \"t\"\n            min_pwm",
+            ),
+            &trigger_block("            response_seconds = 5\n"),
+        );
+        let cfg = Config::from_toml_str(&toml_str).unwrap();
+        assert!(matches!(
+            &cfg.curves["t"],
+            CurveConfig::Trigger(t) if t.idle_pwm == 90 && t.load_pwm == 200
+        ));
+    }
+
+    #[test]
+    fn trigger_unordered_thresholds_rejected() {
+        // load_temp not above idle_temp.
+        let toml_str = with_mix(
+            &base_toml(),
+            "[curves.t]\n            kind = \"trigger\"\n            sensor = \"cpu\"\n            \
+             idle_temp = 60\n            idle_pwm = 90\n            load_temp = 40\n            load_pwm = 200",
+        );
+        assert!(errors_of(&toml_str)
+            .iter()
+            .any(|e| matches!(e, ValidationError::TriggerThresholdsUnordered { .. })));
+    }
+
+    #[test]
+    fn trigger_pwm_out_of_range_rejected() {
+        let toml_str = with_mix(
+            &base_toml(),
+            "[curves.t]\n            kind = \"trigger\"\n            sensor = \"cpu\"\n            \
+             idle_temp = 40\n            idle_pwm = 90\n            load_temp = 60\n            load_pwm = 300",
+        );
+        assert!(errors_of(&toml_str).iter().any(|e| matches!(
             e,
-            ValidationError::FlatPwmOutOfRange { pwm: 300, .. }
+            ValidationError::TriggerPwmOutOfRange {
+                field: "load",
+                pwm: 300,
+                ..
+            }
         )));
+    }
+
+    #[test]
+    fn trigger_forbidden_on_pump_channel_directly_and_through_mix() {
+        // pwm1 binding a trigger directly.
+        let direct = format!(
+            "[sensors.cpu]\n            kind = \"hwmon\"\n            hwmon_name = \"k10temp\"\n            \
+             input = \"temp1_input\"\n            {}\n            \
+             [channels.pwm1]\n            hwmon_name = \"nct6799\"\n            curve = \"t\"\n            \
+             min_pwm = 80\n            smoothing_seconds = 5\n",
+            trigger_block(""),
+        );
+        assert!(errors_of(&direct).iter().any(|e| matches!(
+            e,
+            ValidationError::TriggerOnPumpChannel { channel, .. } if channel == "pwm1"
+        )));
+
+        // pwm1 binding a mix that reaches a trigger.
+        let via_mix = direct
+            .replace("curve = \"t\"", "curve = \"m\"")
+            .replace(
+                "[channels.pwm1]",
+                "[curves.m]\n            kind = \"mix\"\n            curves = [\"t\"]\n            [channels.pwm1]",
+            );
+        assert!(errors_of(&via_mix)
+            .iter()
+            .any(|e| matches!(e, ValidationError::TriggerOnPumpChannel { .. })));
+    }
+
+    #[test]
+    fn trigger_allowed_on_non_pump_channel() {
+        let toml_str = with_mix(
+            &base_toml().replace(
+                "curve = \"c\"\n            min_pwm",
+                "curve = \"t\"\n            min_pwm",
+            ),
+            &trigger_block(""),
+        );
+        Config::from_toml_str(&toml_str).expect("trigger on pwm2 is fine");
+    }
+
+    #[test]
+    fn offset_accepted_and_out_of_range_rejected() {
+        let ok = base_toml().replace("min_pwm = 70", "min_pwm = 70\noffset_pwm = -20");
+        assert_eq!(
+            Config::from_toml_str(&ok).unwrap().channels["pwm2"].offset_pwm,
+            -20
+        );
+
+        let bad = base_toml().replace("min_pwm = 70", "min_pwm = 70\noffset_pwm = 400");
+        assert!(errors_of(&bad)
+            .iter()
+            .any(|e| matches!(e, ValidationError::OffsetOutOfRange { offset: 400, .. })));
     }
 
     #[test]
@@ -772,7 +1008,11 @@ mod tests {
         let toml_str = base_toml().replace("[channels.pwm2]", "[channels.pwm1]");
         assert!(errors_of(&toml_str).iter().any(|e| matches!(
             e,
-            ValidationError::MinPwmBelowPumpFloor { min_pwm: 70, floor: 80, .. }
+            ValidationError::MinPwmBelowPumpFloor {
+                min_pwm: 70,
+                floor: 80,
+                ..
+            }
         )));
 
         let ok = toml_str.replace("min_pwm = 70", "min_pwm = 80");
@@ -785,6 +1025,57 @@ mod tests {
         assert!(errors_of(&toml_str)
             .iter()
             .any(|e| matches!(e, ValidationError::BadChannelName { .. })));
+    }
+
+    #[test]
+    fn non_canonical_pwm_alias_rejected() {
+        // `pwm01` would parse to physical index 1 — the pump header — while
+        // dodging the string checks against PUMP_CHANNEL (min_pwm 80 floor,
+        // trigger ban). It must die at the name check instead.
+        let toml_str = base_toml().replace("[channels.pwm2]", "[channels.pwm01]");
+        let errs = errors_of(&toml_str);
+        assert!(errs
+            .iter()
+            .any(|e| matches!(e, ValidationError::BadChannelName { .. })));
+        // And precisely because the name is rejected, the pump floor was
+        // *not* consulted — no half-validated alias slips through.
+        assert!(!errs
+            .iter()
+            .any(|e| matches!(e, ValidationError::MinPwmBelowPumpFloor { .. })));
+
+        for name in ["pwm001", "pwm+1", "pwm 1", "pwm999999999999"] {
+            let toml_str =
+                base_toml().replace("[channels.pwm2]", &format!("[channels.\"{name}\"]"));
+            assert!(
+                errors_of(&toml_str)
+                    .iter()
+                    .any(|e| matches!(e, ValidationError::BadChannelName { .. })),
+                "`{name}` must be rejected"
+            );
+        }
+    }
+
+    #[test]
+    fn pump_alias_cannot_duplicate_the_pump_channel() {
+        // pwm1 and pwm01 are distinct TOML keys but the same physical
+        // header; canonical-name validation makes the alias unrepresentable.
+        let toml_str = format!(
+            "{}\n{}",
+            base_toml()
+                .replace("[channels.pwm2]", "[channels.pwm1]")
+                .replace("min_pwm = 70", "min_pwm = 80"),
+            r#"
+            [channels.pwm01]
+            hwmon_name = "nct6799"
+            curve = "c"
+            min_pwm = 60
+            smoothing_seconds = 5
+            "#
+        );
+        assert!(errors_of(&toml_str).iter().any(|e| matches!(
+            e,
+            ValidationError::BadChannelName { channel } if channel == "pwm01"
+        )));
     }
 
     #[test]

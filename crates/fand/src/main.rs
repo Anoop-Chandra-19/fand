@@ -88,8 +88,7 @@ fn run(args: &Args) -> Result<()> {
         return Ok(());
     }
 
-    let mut engine =
-        engine::Engine::from_config(&cfg, &toml, Path::new(HWMON_ROOT), args.dry_run)?;
+    let mut engine = engine::Engine::from_config(&cfg, &toml, Path::new(HWMON_ROOT), args.dry_run)?;
 
     let shutdown = Arc::new(AtomicBool::new(false));
     for sig in [SIGTERM, SIGINT, SIGQUIT] {

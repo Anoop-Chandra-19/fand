@@ -12,7 +12,11 @@ use fand_proto::client::Client;
 use fand_proto::{Command, Status, SOCKET_PATH};
 
 #[derive(Parser)]
-#[command(name = "fanctl", version, about = "inspect and control the fand daemon")]
+#[command(
+    name = "fanctl",
+    version,
+    about = "inspect and control the fand daemon"
+)]
 struct Args {
     /// Daemon socket path
     #[arg(long, default_value = SOCKET_PATH)]
@@ -266,6 +270,26 @@ fn curve_show(socket: &Path, name: Option<&str>) -> Result<()> {
                     duty_percent(f.pwm as u8)
                 );
             }
+            CurveConfig::Trigger(t) => {
+                println!("curve `{curve_name}` (trigger, sensor `{}`):", t.sensor);
+                println!(
+                    "  idle ≤ {}°C → pwm {} ({})",
+                    t.idle_temp,
+                    t.idle_pwm,
+                    duty_percent(t.idle_pwm as u8)
+                );
+                println!(
+                    "  load ≥ {}°C → pwm {} ({})",
+                    t.load_temp,
+                    t.load_pwm,
+                    duty_percent(t.load_pwm as u8)
+                );
+                if t.response_seconds > 0 {
+                    println!("  response: {}s", t.response_seconds);
+                } else {
+                    println!("  response: instant");
+                }
+            }
         }
     }
     Ok(())
@@ -333,9 +357,9 @@ fn parse_pwm(s: &str) -> Result<u8> {
         }
         Ok((pct * 255.0 / 100.0).round() as u8)
     } else {
-        let raw: u16 = s
-            .parse()
-            .with_context(|| format!("bad pwm value `{s}` (want 0-255 or a percentage like 55%)"))?;
+        let raw: u16 = s.parse().with_context(|| {
+            format!("bad pwm value `{s}` (want 0-255 or a percentage like 55%)")
+        })?;
         if raw > 255 {
             bail!("pwm {raw} out of range 0-255");
         }

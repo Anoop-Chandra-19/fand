@@ -118,12 +118,26 @@ never silently replace it — GUI and fanctl must show the function explicitly
   Tests (all in): no output change within band; change accepted after dwell;
   down slower than up; extremes bypass (and honored when disabled); dwell
   reset on retreat/direction flip; reload resets; engine-level wiring.
-- **8b — trigger curve + per-channel offset.** Trigger: {idle_temp, idle_pwm,
-  load_temp, load_pwm, response_seconds}, latches between thresholds.
-  **Forbidden on pwm1** (same validation class as the pump floor); idle_pwm
-  may never go below MIN_PWM_FLOOR — zero-RPM mode no longer exists (see the
-  hardening pass below), fans never stop. Offset: signed add post-curve,
-  pre-clamp — clamp order stays min_pwm..255.
+- **8b — trigger curve + per-channel offset.** ✅ code complete 2026-07-06
+  (not deployed — freeze holds). Trigger is a fourth curve kind
+  (`CurveConfig::Trigger`): {sensor, idle_temp, idle_pwm, load_temp,
+  load_pwm, response_seconds}. `trigger::TriggerLatch` holds {loaded,
+  pending_since} — it flips to load at/above load_temp and back to idle
+  at/below idle_temp, holding state across the deadband; a crossing must
+  persist response_seconds (dwell resets on retreat). First sample latches
+  load only if temp ≥ load_temp, else idle (fail-low = quiet until hot; safe
+  because triggers can't touch the pump, the min_pwm floor keeps the fan
+  spinning, and the ≥115 °C failsafe still escalates). It smooths its sensor
+  with the channel window like a graph node, and is a first-class mix
+  member. **Forbidden on pwm1**: `Config::validate` walks the pump channel's
+  reachable curves (`reaches_trigger`, cycle-safe) and rejects any trigger —
+  a step function is wrong for the pump. idle/load pwm below the floor need
+  no special case (zero-RPM is gone); the ramp floors every curve kind
+  alike. Offset: `offset_pwm: i16` per channel, `apply_offset` adds it to
+  the curve output clamped 0..=255 *before* the ramp's min_pwm floor, so the
+  floor still wins (a negative offset can't stall a fan). `|offset| ≤ 255`
+  validated. Reported target_pwm includes the offset; overrides bypass it.
+  GUI surfaces both read-only (editor controls are phase 10).
 - **8c — `fanctl calibrate <channel>`** (deferred until wanted). Interactive
   sweep to find real stall/start duties to *suggest* min_pwm values.
   Hard gates: refuses pwm1 outright (pump inline); requires `--i-know`
@@ -195,6 +209,24 @@ A third round refined the `unrestored` machinery itself:
   rollback) now share `park_unrestored`, so the rollback branch — whose
   exact I/O failure sequence can't be forced in tests — runs the same code
   the drop-path tests exercise.
+
+A fourth round (2026-07-10, post-8b review) closed:
+
+- **Non-canonical channel names rejected**: `pwm01` parses to physical
+  index 1 but dodged every string check against `PUMP_CHANNEL` (pump floor,
+  trigger ban) and could alias `pwm1` as a second TOML key on the same
+  header. `is_pwm_name` now requires the name to round-trip through its
+  parsed index (`name == format!("pwm{n}")`), so name equality means
+  physical-header equality everywhere downstream.
+- **GUI read-only surfacing actually delivered**: `offset_pwm` joins
+  `ChannelSettings` (shown on the settings card when non-zero), trigger
+  payloads carry `response_seconds`, and trigger cards render a full body
+  (sensor + live temp, both thresholds/duties, dwell) instead of a bare
+  badge.
+- **Test gaps**: eval-level proof that trigger inputs share the channel
+  smoothing window (a spike above load_temp must not flip the latch);
+  engine-level trigger test covering idle/load transitions across ticks,
+  deadband hold, status reporting, and latch reset on reload.
 
 ## Phase 9 — GUI shell goes native (CSD + adwaita foundation)
 

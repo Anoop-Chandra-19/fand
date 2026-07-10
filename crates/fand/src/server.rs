@@ -166,7 +166,9 @@ fn forward_to_engine(cmd: Command, commands: &mpsc::Sender<EngineCommand>) -> Re
 fn send(writer: &mut UnixStream, response: &Response) -> Result<()> {
     let mut line = serde_json::to_string(response).context("encoding response")?;
     line.push('\n');
-    writer.write_all(line.as_bytes()).context("writing response")
+    writer
+        .write_all(line.as_bytes())
+        .context("writing response")
 }
 
 fn fand_group_gid() -> Option<u32> {

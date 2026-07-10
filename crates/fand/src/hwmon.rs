@@ -17,8 +17,7 @@ impl HwmonDevice {
     /// file matches. Taking the root as a parameter keeps this testable
     /// against a fake directory tree.
     pub fn find_by_name(root: &Path, name: &str) -> Result<Self> {
-        let entries =
-            fs::read_dir(root).with_context(|| format!("reading {}", root.display()))?;
+        let entries = fs::read_dir(root).with_context(|| format!("reading {}", root.display()))?;
         for entry in entries {
             let path = entry?.path();
             let Ok(dev_name) = fs::read_to_string(path.join("name")) else {
@@ -72,8 +71,8 @@ impl HwmonDevice {
     /// Every pwmN_enable file the chip exposes (used by --restore-auto,
     /// which must cover channels beyond the configured ones).
     pub fn all_pwm_enable_paths(&self) -> Result<Vec<PathBuf>> {
-        let entries = fs::read_dir(&self.path)
-            .with_context(|| format!("reading {}", self.path.display()))?;
+        let entries =
+            fs::read_dir(&self.path).with_context(|| format!("reading {}", self.path.display()))?;
         let mut out = Vec::new();
         for entry in entries {
             let path = entry?.path();
@@ -106,8 +105,7 @@ impl HwmonDevice {
 
     fn read_attr(&self, attr: &str) -> Result<i64> {
         let path = self.attr_path(attr)?;
-        let s =
-            fs::read_to_string(&path).with_context(|| format!("reading {}", path.display()))?;
+        let s = fs::read_to_string(&path).with_context(|| format!("reading {}", path.display()))?;
         s.trim()
             .parse()
             .with_context(|| format!("parsing {} (`{}`)", path.display(), s.trim()))

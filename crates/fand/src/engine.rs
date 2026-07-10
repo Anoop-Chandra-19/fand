@@ -17,7 +17,7 @@ use std::time::{Duration, Instant};
 
 use anyhow::{bail, Context, Result};
 use fand_core::config::SensorConfig;
-use fand_core::{window_ticks, Config, CurveTree, Ramp, RampConfig};
+use fand_core::{apply_offset, window_ticks, Config, CurveTree, Ramp, RampConfig};
 use fand_proto::{ChannelStatus, Command, Response, ResponseData, Status};
 
 use crate::failsafe::SharedPaths;
@@ -54,6 +54,8 @@ struct Channel {
     /// Copied from config for override validation: the lowest PWM a client
     /// may pin this channel to.
     min_pwm: u8,
+    /// Signed bias added to the curve output before the ramp (§8b).
+    offset_pwm: i16,
 }
 
 /// A client-requested pin: the channel follows `pwm` (through the ramp)
@@ -256,6 +258,7 @@ impl Engine {
                 ramp,
                 last_written: None,
                 min_pwm: ch.min_pwm,
+                offset_pwm: ch.offset_pwm,
             });
         }
 
@@ -348,8 +351,7 @@ impl Engine {
     /// running engine is left untouched.
     pub fn reload(&mut self, toml_text: &str) -> Result<()> {
         let cfg = Config::from_toml_str(toml_text).map_err(|e| anyhow::anyhow!("{e}"))?;
-        let controlled: BTreeSet<String> =
-            self.channels.iter().map(|c| c.name.clone()).collect();
+        let controlled: BTreeSet<String> = self.channels.iter().map(|c| c.name.clone()).collect();
         let mut new = Engine::build(&cfg, toml_text, &self.hwmon_root, self.dry_run, &controlled)?;
 
         // A kept channel must keep its hardware binding: "pwm2" on a
@@ -441,8 +443,8 @@ impl Engine {
 
         // Any reload is a fresh chance to hand earlier stuck channels back
         // to firmware (re-added ones were already removed above).
-        unrestored.retain(|u| {
-            match std::fs::write(&u.enable_path, FIRMWARE_AUTO.to_string()) {
+        unrestored.retain(
+            |u| match std::fs::write(&u.enable_path, FIRMWARE_AUTO.to_string()) {
                 Ok(()) => {
                     eprintln!("fand: {}: firmware auto restored on retry", u.name);
                     false
@@ -451,8 +453,8 @@ impl Engine {
                     eprintln!("fand: {}: still stuck in manual mode: {e:#}", u.name);
                     true
                 }
-            }
-        });
+            },
+        );
 
         for ch in &self.channels {
             if new_names.contains(ch.name.as_str()) {
@@ -570,7 +572,12 @@ impl Engine {
     /// Returns early when a command changed control targets (so the caller
     /// re-ticks immediately) or shutdown is requested. The 200 ms cap on
     /// each wait bounds how long a signal can go unnoticed.
-    fn idle(&mut self, shutdown: &AtomicBool, reload: &AtomicBool, commands: &Receiver<EngineCommand>) {
+    fn idle(
+        &mut self,
+        shutdown: &AtomicBool,
+        reload: &AtomicBool,
+        commands: &Receiver<EngineCommand>,
+    ) {
         const SLICE: Duration = Duration::from_millis(200);
         let deadline = Instant::now() + self.tick;
         while !shutdown.load(Ordering::Relaxed) && !reload.load(Ordering::Relaxed) {
@@ -636,9 +643,10 @@ impl Engine {
             },
             // GetStatus/SubscribeStatus are answered by the server threads
             // straight from the hub and never reach this channel.
-            Command::GetStatus | Command::SubscribeStatus => {
-                (Response::err("internal: status commands are not engine commands"), false)
-            }
+            Command::GetStatus | Command::SubscribeStatus => (
+                Response::err("internal: status commands are not engine commands"),
+                false,
+            ),
         };
         // A dead client is the connection thread's problem, not ours.
         let _ = cmd.reply.send(response);
@@ -677,13 +685,16 @@ impl Engine {
     }
 
     fn find_channel(&self, channel: &str) -> Result<&Channel> {
-        self.channels.iter().find(|c| c.name == channel).with_context(|| {
-            let known: Vec<&str> = self.channels.iter().map(|c| c.name.as_str()).collect();
-            format!(
-                "unknown channel `{channel}` (configured: {})",
-                known.join(", ")
-            )
-        })
+        self.channels
+            .iter()
+            .find(|c| c.name == channel)
+            .with_context(|| {
+                let known: Vec<&str> = self.channels.iter().map(|c| c.name.as_str()).collect();
+                format!(
+                    "unknown channel `{channel}` (configured: {})",
+                    known.join(", ")
+                )
+            })
     }
 
     fn tick_once(&mut self) -> Result<Status> {
@@ -693,11 +704,14 @@ impl Engine {
         for ch in &mut self.channels {
             // The curve tree is evaluated even under an override: the
             // smoothing windows stay warm, and status keeps reporting what
-            // the channel would do on its own.
-            let raw_target = ch
+            // the channel would do on its own. The per-channel offset is
+            // part of that curve-side target (the ramp still floors it to
+            // min_pwm afterwards, so a negative offset can't stall a fan).
+            let curve_out = ch
                 .tree
                 .eval(&temps, now)
                 .with_context(|| format!("channel `{}`", ch.name))?;
+            let raw_target = apply_offset(curve_out, ch.offset_pwm);
 
             let (ramp_target, mode, override_remaining_s) = match self.overrides.get(&ch.name) {
                 Some(o) if now >= o.expires_at => {
@@ -764,7 +778,10 @@ impl Engine {
         // their last duty forever, so park them at full blast too.
         for u in &self.unrestored {
             if let Err(e) = std::fs::write(&u.pwm_path, FAILSAFE_PWM.to_string()) {
-                eprintln!("fand: FAILED failsafe write on unrestored {}: {e:#}", u.name);
+                eprintln!(
+                    "fand: FAILED failsafe write on unrestored {}: {e:#}",
+                    u.name
+                );
             }
         }
     }
@@ -776,13 +793,11 @@ impl Engine {
 fn persist_config(path: &Path, toml_text: &str) -> Result<()> {
     if path.exists() {
         let bak = path.with_extension("toml.bak");
-        std::fs::copy(path, &bak)
-            .with_context(|| format!("backing up to {}", bak.display()))?;
+        std::fs::copy(path, &bak).with_context(|| format!("backing up to {}", bak.display()))?;
     }
     let tmp = path.with_extension("toml.tmp");
     std::fs::write(&tmp, toml_text).with_context(|| format!("writing {}", tmp.display()))?;
-    std::fs::rename(&tmp, path)
-        .with_context(|| format!("renaming into {}", path.display()))?;
+    std::fs::rename(&tmp, path).with_context(|| format!("renaming into {}", path.display()))?;
     Ok(())
 }
 
@@ -796,9 +811,7 @@ fn read_temps(
     let mut temps = BTreeMap::new();
     for (name, source) in sensors {
         let temp = match source {
-            SensorSource::Hwmon { hwmon_name, input } => {
-                devices[hwmon_name].read_temp_c(input)
-            }
+            SensorSource::Hwmon { hwmon_name, input } => devices[hwmon_name].read_temp_c(input),
             SensorSource::Nvml { device_index } => gpu
                 .context("NVML sensor configured but NVML not initialized")?
                 .read_temp_c(*device_index),
@@ -816,8 +829,8 @@ fn read_temps(
 mod tests {
     use super::*;
     use crate::failsafe::FailsafeGuard;
-    use std::os::unix::fs::PermissionsExt;
     use std::fs;
+    use std::os::unix::fs::PermissionsExt;
 
     /// Fake /sys/class/hwmon with an nct6799 (fan1 + fan2 live) and a
     /// k10temp.
@@ -919,14 +932,44 @@ mod tests {
     }
 
     #[test]
+    fn tick_applies_channel_offset() {
+        let root = fake_sysfs();
+        // 54 °C → curve 136; +20 offset → target 156, reported as such.
+        let offset_config = TEST_CONFIG.replace("min_pwm = 70", "min_pwm = 70\noffset_pwm = 20");
+        let cfg = Config::from_toml_str(&offset_config).unwrap();
+        let mut e = Engine::from_config(&cfg, &offset_config, root.path(), false).unwrap();
+        let status = e.tick_once().unwrap();
+        assert_eq!(status.channels["pwm2"].target_pwm, 156);
+        // Ramp from firmware pwm 128, one max_step_up of 10.
+        assert_eq!(read(&root, "pwm2"), "138");
+    }
+
+    #[test]
+    fn negative_offset_cannot_push_below_min_pwm() {
+        let root = fake_sysfs();
+        // Curve 136 with a −100 offset → 36, but min_pwm 70 floors it. Ramp
+        // from 128 steps down toward the floor, never under it.
+        let offset_config = TEST_CONFIG.replace("min_pwm = 70", "min_pwm = 70\noffset_pwm = -100");
+        let cfg = Config::from_toml_str(&offset_config).unwrap();
+        let mut e = Engine::from_config(&cfg, &offset_config, root.path(), false).unwrap();
+        let status = e.tick_once().unwrap();
+        assert_eq!(
+            status.channels["pwm2"].target_pwm, 36,
+            "offset applied pre-floor"
+        );
+        assert!(
+            status.channels["pwm2"].current_pwm >= 70,
+            "ramp holds the floor"
+        );
+    }
+
+    #[test]
     fn tick_evaluates_mix_curve_tree() {
         let root = fake_sysfs();
         // Two graph curves on the same sensor with different shapes; the
         // mix takes the max of their outputs. At 54 °C: c → 136, hot → 156.
-        let mix_config = TEST_CONFIG.replace(
-            "curve = \"c\"",
-            "curve = \"m\"",
-        ) + r#"
+        let mix_config = TEST_CONFIG.replace("curve = \"c\"", "curve = \"m\"")
+            + r#"
         [curves.hot]
         kind = "graph"
         sensor = "cpu"
@@ -983,12 +1026,58 @@ mod tests {
         let mut e = Engine::from_config(&cfg, &toml, root.path(), false).unwrap();
         e.tick_once().unwrap(); // anchored at 54 °C
         fs::write(root.path().join("hwmon1/temp1_input"), "55500\n").unwrap();
-        assert_eq!(e.tick_once().unwrap().channels["pwm2"].target_pwm, 136, "held");
+        assert_eq!(
+            e.tick_once().unwrap().channels["pwm2"].target_pwm,
+            136,
+            "held"
+        );
 
         // Reload rebuilds the curve tree: the filter re-anchors at the
         // current 55.5 °C instead of keeping the held 54 °C.
         e.reload(&toml).unwrap();
         assert_eq!(e.tick_once().unwrap().channels["pwm2"].target_pwm, 142);
+    }
+
+    #[test]
+    fn trigger_channel_latches_across_ticks_and_resets_on_reload() {
+        let root = fake_sysfs();
+        // No response_seconds — engine tests can't fast-forward the dwell.
+        let toml = TEST_CONFIG.replace("curve = \"c\"", "curve = \"t\"")
+            + r#"
+        [curves.t]
+        kind = "trigger"
+        sensor = "cpu"
+        idle_temp = 40
+        idle_pwm = 90
+        load_temp = 60
+        load_pwm = 200
+    "#;
+        let cfg = Config::from_toml_str(&toml).unwrap();
+        let mut e = Engine::from_config(&cfg, &toml, root.path(), false).unwrap();
+
+        // 54 °C sits inside the 40–60 deadband → first-sample rule: idle.
+        let status = e.tick_once().unwrap();
+        assert_eq!(status.channels["pwm2"].target_pwm, 90, "starts idle");
+        assert_eq!(status.channels["pwm2"].mode, "curve");
+
+        fs::write(root.path().join("hwmon1/temp1_input"), "65000\n").unwrap();
+        let status = e.tick_once().unwrap();
+        assert_eq!(
+            status.channels["pwm2"].target_pwm, 200,
+            "65 °C ≥ load_temp: flips"
+        );
+
+        fs::write(root.path().join("hwmon1/temp1_input"), "50000\n").unwrap();
+        let status = e.tick_once().unwrap();
+        assert_eq!(
+            status.channels["pwm2"].target_pwm, 200,
+            "deadband holds load"
+        );
+
+        // Reload rebuilds the curve tree: the fresh latch sees 50 °C in the
+        // deadband and starts idle again (first-sample rule).
+        e.reload(&toml).unwrap();
+        assert_eq!(e.tick_once().unwrap().channels["pwm2"].target_pwm, 90);
     }
 
     #[test]
@@ -1142,7 +1231,10 @@ mod tests {
         e.tick_once().unwrap();
         e.set_override("pwm2", 200, 60).unwrap();
         assert!(e.clear_override("pwm2").unwrap());
-        assert!(!e.clear_override("pwm2").unwrap(), "second clear is a no-op");
+        assert!(
+            !e.clear_override("pwm2").unwrap(),
+            "second clear is a no-op"
+        );
         let status = e.tick_once().unwrap();
         assert_eq!(status.channels["pwm2"].mode, "curve");
     }
@@ -1195,7 +1287,9 @@ mod tests {
         let mut e = engine(&root);
         e.tick_once().unwrap();
         assert!(e.reload("this is not toml").is_err());
-        assert!(e.reload(&TEST_CONFIG.replace("min_pwm = 70", "min_pwm = 10")).is_err());
+        assert!(e
+            .reload(&TEST_CONFIG.replace("min_pwm = 70", "min_pwm = 10"))
+            .is_err());
         assert_eq!(e.config_toml, TEST_CONFIG, "old config must stay applied");
         e.tick_once().unwrap();
     }
@@ -1206,7 +1300,11 @@ mod tests {
         let mut e = engine(&root);
         e.take_control().unwrap();
         e.reload(TEST_CONFIG_TWO_CHANNELS).unwrap();
-        assert_eq!(read(&root, "pwm1_enable"), "1", "new channel under manual control");
+        assert_eq!(
+            read(&root, "pwm1_enable"),
+            "1",
+            "new channel under manual control"
+        );
         e.tick_once().unwrap();
         // 54 °C → 136 target; pwm1 ramps from its firmware value 100 by 10.
         assert_eq!(read(&root, "pwm1"), "110");
@@ -1220,7 +1318,11 @@ mod tests {
         fs::write(root.path().join("hwmon0/fan1_input"), "0\n").unwrap();
         let err = e.reload(TEST_CONFIG_TWO_CHANNELS).unwrap_err();
         assert!(err.to_string().contains("dead header"), "{err:#}");
-        assert_eq!(read(&root, "pwm1_enable"), "5\n", "must stay firmware-controlled");
+        assert_eq!(
+            read(&root, "pwm1_enable"),
+            "5\n",
+            "must stay firmware-controlled"
+        );
         e.tick_once().unwrap();
         assert_eq!(e.channels.len(), 1, "old config still active");
     }
@@ -1245,7 +1347,11 @@ mod tests {
         e.take_control().unwrap();
         assert_eq!(read(&root, "pwm1_enable"), "1");
         e.reload(TEST_CONFIG).unwrap();
-        assert_eq!(read(&root, "pwm1_enable"), "5", "dropped channel handed back");
+        assert_eq!(
+            read(&root, "pwm1_enable"),
+            "5",
+            "dropped channel handed back"
+        );
         assert_eq!(read(&root, "pwm2_enable"), "1", "kept channel untouched");
     }
 
@@ -1298,7 +1404,11 @@ mod tests {
         fs::set_permissions(&pwm1_path, perms).unwrap();
 
         e.reload(TEST_CONFIG).unwrap();
-        assert_eq!(read(&root, "pwm1_enable"), "1", "still stuck in manual mode");
+        assert_eq!(
+            read(&root, "pwm1_enable"),
+            "1",
+            "still stuck in manual mode"
+        );
         assert_eq!(
             read(&root, "pwm1"),
             "255",
@@ -1388,7 +1498,10 @@ mod tests {
         );
         let err = e.reload(&moved).unwrap_err();
         assert!(err.to_string().contains("hardware bindings"), "{err:#}");
-        assert_eq!(e.channels[0].hwmon_name, "nct6799", "old config still active");
+        assert_eq!(
+            e.channels[0].hwmon_name, "nct6799",
+            "old config still active"
+        );
         assert_eq!(read(&root, "pwm2_enable"), "1", "old header still ours");
         assert_eq!(
             fs::read_to_string(aux.join("pwm2_enable")).unwrap(),
@@ -1428,7 +1541,11 @@ mod tests {
         let err = e.reload(&three).unwrap_err();
         assert!(err.to_string().contains("reload aborted"), "{err:#}");
         assert_eq!(e.channels.len(), 1, "old config still active");
-        assert_eq!(read(&root, "pwm1_enable"), "5", "pwm1 rolled back to firmware");
+        assert_eq!(
+            read(&root, "pwm1_enable"),
+            "5",
+            "pwm1 rolled back to firmware"
+        );
         assert!(
             !shared.snapshot().contains(&nct.join("pwm1_enable")),
             "cleanly rolled-back channel leaves the restore list"
@@ -1448,7 +1565,10 @@ mod tests {
         let stricter = TEST_CONFIG_TWO_CHANNELS.replace("min_pwm = 70", "min_pwm = 90");
         e.reload(&stricter).unwrap();
         assert!(e.overrides.contains_key("pwm1"), "legal override survives");
-        assert!(!e.overrides.contains_key("pwm2"), "now-illegal override dropped");
+        assert!(
+            !e.overrides.contains_key("pwm2"),
+            "now-illegal override dropped"
+        );
     }
 
     #[test]

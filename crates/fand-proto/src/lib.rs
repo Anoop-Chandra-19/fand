@@ -46,7 +46,9 @@ pub enum Command {
     /// Current applied config as TOML text (comments preserved).
     GetConfig,
     /// Validate, hot-apply, then persist to the daemon's config path.
-    SetConfig { toml: String },
+    SetConfig {
+        toml: String,
+    },
     /// Re-read the config file from disk and hot-apply it.
     ReloadConfig,
     /// Pin a channel to a fixed PWM until the TTL expires. The daemon
@@ -56,7 +58,9 @@ pub enum Command {
         pwm: u8,
         ttl_seconds: u64,
     },
-    ClearOverride { channel: String },
+    ClearOverride {
+        channel: String,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -125,9 +129,10 @@ pub struct ChannelStatus {
     pub rpm: u32,
     /// PWM actually written this tick (ramp output).
     pub current_pwm: u8,
-    /// Curve output this tick (input hysteresis already applied), before
-    /// the ramp/deadband. Reports the curve value even while an override is
-    /// active, so clients can show what the channel would do on its own.
+    /// Curve output this tick (input hysteresis and the channel's
+    /// offset_pwm already applied), before the ramp/deadband. Reports the
+    /// curve value even while an override is active, so clients can show
+    /// what the channel would do on its own.
     pub target_pwm: u8,
     /// "curve" (following its curve/mix policy) or "override" (pinned).
     pub mode: String,

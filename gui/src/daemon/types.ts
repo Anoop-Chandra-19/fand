@@ -35,7 +35,17 @@ export type CurvePoint = [number, number];
 export type CurveInfo =
   | { kind: "graph"; sensor: string; points: CurvePoint[] }
   | { kind: "mix"; function: string; members: string[] }
-  | { kind: "flat"; pwm: number };
+  | { kind: "flat"; pwm: number }
+  // Read-only until the phase-10 editor gains trigger controls.
+  | {
+      kind: "trigger";
+      sensor: string;
+      idle_temp: number;
+      idle_pwm: number;
+      load_temp: number;
+      load_pwm: number;
+      response_seconds: number;
+    };
 
 export interface CurveEditorPayload {
   curves: Record<string, CurveInfo>;
@@ -49,6 +59,8 @@ export interface CurveEditorPayload {
 export interface ChannelSettings {
   min_pwm: number;
   smoothing_seconds: number;
+  /** Read-only until the phase-10 editor gains a control for it. */
+  offset_pwm: number;
 }
 
 export type ChannelSettingsPayload = Record<string, ChannelSettings>;

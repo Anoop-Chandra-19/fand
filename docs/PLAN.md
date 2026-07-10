@@ -111,6 +111,13 @@ temperature source; a **channel** binds exactly one curve by name. Curve kinds:
   max-of-outputs, NOT one curve fed max-temp — 70 °C means different things
   per component. Cycles are rejected by validation.
 - **flat**: constant pwm.
+- **trigger** (phase 8b): two duties latched across a temp deadband — idle
+  below idle_temp, load above load_temp, holding state in between (no
+  hunting); a crossing must persist response_seconds. Forbidden on pwm1
+  (step function, wrong for the pump). Fail-low first sample.
+
+Per-channel **offset_pwm** (phase 8b): signed bias added to the curve output
+before the min_pwm..255 clamp, so the floor still wins.
 
 ### Example config sketch (TOML)
 
