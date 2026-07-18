@@ -61,6 +61,13 @@ pub fn run() {
             curves::get_curve_editor_data,
             curves::set_curve_points,
             curves::create_graph_curve,
+            curves::apply_graph_curve,
+            curves::create_flat_curve,
+            curves::set_flat_pwm,
+            curves::create_mix_curve,
+            curves::set_mix_function,
+            curves::create_trigger_curve,
+            curves::apply_trigger_curve,
             curves::set_graph_sensor,
             curves::add_mix_member,
             curves::remove_mix_member,
@@ -68,7 +75,11 @@ pub fn run() {
             curves::delete_curve,
             settings::get_channel_settings,
             settings::set_min_pwm,
-            settings::set_smoothing_seconds
+            settings::set_smoothing_seconds,
+            settings::set_offset_pwm,
+            settings::clear_override,
+            settings::daemon_socket,
+            settings::reload_config
         ])
         .setup(|app| {
             let handle = app.handle().clone();

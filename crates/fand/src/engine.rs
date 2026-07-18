@@ -124,6 +124,9 @@ pub struct Engine {
     /// The file `ReloadConfig` re-reads; None when the engine was built
     /// from a string only (tests).
     config_path: Option<PathBuf>,
+    /// Bumped on every successful config apply and restated in every
+    /// status frame, so clients can tell when their config copy is stale.
+    config_generation: u64,
 }
 
 impl Engine {
@@ -279,6 +282,7 @@ impl Engine {
             failsafe_paths: None,
             unrestored: Vec::new(),
             config_path: None,
+            config_generation: 0,
         })
     }
 
@@ -498,6 +502,7 @@ impl Engine {
 
         new.failsafe_paths = self.failsafe_paths.clone();
         new.config_path = self.config_path.clone();
+        new.config_generation = self.config_generation.wrapping_add(1);
         *self = new;
         if let Some(shared) = &self.failsafe_paths {
             shared.set(self.enable_paths());
@@ -610,6 +615,7 @@ impl Engine {
             Command::GetConfig => (
                 Response::ok(ResponseData::Config {
                     toml: self.config_toml.clone(),
+                    generation: self.config_generation,
                 }),
                 false,
             ),
@@ -757,6 +763,7 @@ impl Engine {
         Ok(Status {
             temps,
             channels: channel_status,
+            config_generation: self.config_generation,
         })
     }
 
@@ -1142,10 +1149,27 @@ mod tests {
         assert!(!retick, "get_config must not force a re-tick");
         let resp = reply_rx.try_recv().unwrap();
         assert!(resp.ok);
-        let Some(ResponseData::Config { toml }) = resp.data else {
+        let Some(ResponseData::Config { toml, generation }) = resp.data else {
             panic!("expected config data, got {resp:?}");
         };
         assert_eq!(toml, TEST_CONFIG);
+        assert_eq!(generation, 0, "fresh engine starts at generation 0");
+    }
+
+    #[test]
+    fn config_generation_bumps_on_reload_and_shows_in_status() {
+        let root = fake_sysfs();
+        let mut e = engine(&root);
+        assert_eq!(e.tick_once().unwrap().config_generation, 0);
+
+        let hotter = TEST_CONFIG.replace("[[40, 80], [70, 200]]", "[[40, 90], [70, 210]]");
+        e.reload(&hotter).unwrap();
+        assert_eq!(e.config_generation, 1);
+        assert_eq!(e.tick_once().unwrap().config_generation, 1);
+
+        // A failed reload must not bump: no config change happened.
+        assert!(e.reload("not toml").is_err());
+        assert_eq!(e.config_generation, 1);
     }
 
     #[test]

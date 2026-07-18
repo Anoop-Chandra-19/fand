@@ -8,7 +8,7 @@ import type { Sample, Status } from "./types";
  * "status" event per daemon tick (~2 s) and "daemon-down" when the
  * connection drops.
  */
-export function useDaemonStatus(maxSamples = 450) {
+export function useDaemonStatus(windowMs = 15 * 60_000) {
   // null = no frame yet since launch ("connecting"), false = daemon-down.
   const [connected, setConnected] = useState<boolean | null>(null);
   const [latest, setLatest] = useState<Status | null>(null);
@@ -19,8 +19,12 @@ export function useDaemonStatus(maxSamples = 450) {
       setConnected(true);
       setLatest(event.payload);
       setHistory((prev) => {
-        const next = [...prev, { at: Date.now(), status: event.payload }];
-        return next.length > maxSamples ? next.slice(-maxSamples) : next;
+        // Trim by sample age, not count — the tick interval is the
+        // daemon's to choose, and disconnect gaps deliver no frames.
+        const cutoff = Date.now() - windowMs;
+        const next = prev.filter((s) => s.at >= cutoff);
+        next.push({ at: Date.now(), status: event.payload });
+        return next;
       });
     });
     const unlistenDown = listen("daemon-down", () => setConnected(false));
@@ -28,7 +32,7 @@ export function useDaemonStatus(maxSamples = 450) {
       unlistenStatus.then((f) => f());
       unlistenDown.then((f) => f());
     };
-  }, [maxSamples]);
+  }, [windowMs]);
 
   return { connected, latest, history };
 }

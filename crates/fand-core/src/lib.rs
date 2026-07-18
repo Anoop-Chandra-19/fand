@@ -19,15 +19,18 @@ pub mod ramp;
 pub mod smoothing;
 pub mod trigger;
 
-pub use channel_edit::{set_channel_curve, set_min_pwm, set_smoothing_seconds, ChannelEditError};
+pub use channel_edit::{
+    set_channel_curve, set_min_pwm, set_offset_pwm, set_smoothing_seconds, ChannelEditError,
+};
 pub use config::{
     Config, ConfigError, MixFunction, ValidationError, MIN_PWM_FLOOR, PUMP_CHANNEL,
     PUMP_MIN_PWM_FLOOR,
 };
 pub use curve::{Curve, CurveError};
 pub use curve_edit::{
-    add_mix_member, create_graph_curve, remove_curve, remove_mix_member, replace_curve_points,
-    set_graph_sensor, CurveEditError,
+    add_mix_member, create_flat_curve, create_graph_curve, create_mix_curve, create_trigger_curve,
+    remove_curve, remove_mix_member, replace_curve_points, set_flat_pwm, set_graph_sensor,
+    set_mix_function, update_graph_curve, update_trigger_curve, CurveEditError,
 };
 pub use eval::{CurveTree, EvalError, TreeError};
 pub use hysteresis::InputFilter;

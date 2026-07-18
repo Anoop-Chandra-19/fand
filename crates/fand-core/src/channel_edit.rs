@@ -68,6 +68,18 @@ pub fn set_smoothing_seconds(
     Ok(doc.to_string())
 }
 
+/// Set `offset_pwm` on a channel.
+pub fn set_offset_pwm(
+    toml_text: &str,
+    channel: &str,
+    offset: i16,
+) -> Result<String, ChannelEditError> {
+    let mut doc: DocumentMut = toml_text.parse()?;
+    let chan = channel_table(&mut doc, channel)?;
+    chan["offset_pwm"] = value(i64::from(offset));
+    Ok(doc.to_string())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -126,5 +138,24 @@ smoothing_seconds = 5
         let out = set_smoothing_seconds(TOML, "pwm1", 20).unwrap();
         assert!(out.contains("smoothing_seconds = 20"));
         assert!(out.contains("smoothing_seconds = 5"), "pwm2 untouched");
+    }
+
+    #[test]
+    fn set_offset_pwm_writes_signed_value() {
+        let out = set_offset_pwm(TOML, "pwm2", -20).unwrap();
+        assert!(out.contains("offset_pwm = -20"));
+        assert!(out.contains("# pwm2 comment stays"));
+        assert!(
+            !out.contains("pwm1]\ncurve = \"cpu_rad\"\noffset_pwm"),
+            "pwm1 untouched"
+        );
+    }
+
+    #[test]
+    fn set_offset_pwm_rejects_unknown_channel() {
+        assert!(matches!(
+            set_offset_pwm(TOML, "pwm9", 10),
+            Err(ChannelEditError::UnknownChannel(c)) if c == "pwm9"
+        ));
     }
 }

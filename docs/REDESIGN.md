@@ -228,7 +228,7 @@ A fourth round (2026-07-10, post-8b review) closed:
   engine-level trigger test covering idle/load transitions across ticks,
   deadband hold, status reporting, and latch reset on reload.
 
-## Phase 9 — GUI shell goes native (CSD + adwaita foundation)
+## Phase 9 — GUI shell goes native (CSD + adwaita foundation) ✅ code complete 2026-07-17
 
 - `tauri.conf.json`: `decorations: false`; title stays "fand" (alt-tab only).
 - Headerbar component: `data-tauri-drag-region`, circular close button
@@ -245,7 +245,7 @@ A fourth round (2026-07-10, post-8b review) closed:
 **Exit criteria:** window is one headerbar + content, draggable, closes;
 "fand" appears at most once on screen.
 
-## Phase 10 — Overview redesign (FanControl layout, GNOME skin)
+## Phase 10 — Overview redesign (FanControl layout, GNOME skin) ✅ code complete 2026-07-17
 
 - Single main view: **Controls** section (per-channel cards: name, curve
   dropdown, live % + RPM in `.numeric`, ⋮ → channel properties dialog) and
@@ -266,3 +266,134 @@ A fourth round (2026-07-10, post-8b review) closed:
 **Exit criteria:** curves page gone with no lost capability; every daemon
 state (override, failsafe, disconnect) visibly surfaced; side-by-side sniff
 test against a real libadwaita app (GNOME Settings) passes.
+
+## Phases 9 + 10 — delivered 2026-07-17
+
+Implemented from the Claude Design project ("fand design system",
+`fand.html` interactive mock) rather than from scratch — the mock's
+tokens/components were ported into `gui/src/adw/` (Button, Card, Badge,
+Banner, Toast, StatusPage, boxed-list rows, Dialog) on Tailwind, with
+`index.css` rebuilt on the libadwaita values. Delivered: CSD shell
+(`decorations: false`, drag-region headerbar, ⋮ menu, circular close),
+single-view Overview (Temperatures chart card, Fans cards, Curves cards +
+dashed New-curve), curve editor dialogs for **all four kinds** (graph
+two-pane with drag editing + hysteresis-up/down + response rows, batch
+Apply via new `update_graph_curve`; mix function/member switches; flat
+slider; trigger thresholds), channel-properties dialog (curve, min-duty
+floored 60/80, smoothing, offset via new `set_offset_pwm`), New-curve
+dialog (graph/mix/flat/trigger via new `create_*` editors), Preferences
+(accent only), About, toasts, override banner wired to `ClearOverride`,
+disconnect banner + status page with auto-reconnect (verified live).
+
+Deliberate deviations from the mock, all discussed in its own terms:
+
+- Preferences drops the mock's Startup / Safety-tuning / New-channel-
+  defaults groups — nothing daemon-side backs them, and the failsafe
+  limits are invariants, not settings (a note in the dialog says so).
+- Channel properties drops the per-channel "Restore firmware auto" row —
+  no such wire command exists (global `--restore-auto` only).
+- Empty state drops "Import from config" and the firmware-auto fan cards —
+  status only carries configured channels, so undetected headers aren't
+  known to the GUI.
+- Mix/flat/trigger cards are click-to-edit too (the mock only made graph
+  cards activatable); required for "curves page gone with no lost
+  capability" (mix membership, deletion) and adds trigger editing.
+
+Post-delivery fixes (2026-07-17, first hands-on feedback): curve-editor
+point dragging is now relative (delta from the grab position, mapped
+through the SVG's `getScreenCTM` so letterboxing can't offset it — points
+no longer jump to the cursor on pickup); Preferences filled out with the
+honest option set — Appearance (accent), Overview (chart history 5–30 min,
+persisted), Daemon (connection, socket path, working "Reload config from
+disk" via `ReloadConfig`), Safety (failsafe 115 °C / floors 60·80 /
+restore-on-exit shown read-only as invariants). The mock's Startup/tray/
+poll-interval and tunable-failsafe rows stay out: nothing daemon-side
+backs them, and the failsafe limits are invariants by design.
+
+Review round 6 (2026-07-18, Anoop's external review agent — all six
+findings confirmed and fixed):
+
+- **Config recovery** (blocking): the GUI's curve/settings copies now
+  self-heal. The daemon keeps a `config_generation` counter (bumped on
+  every successful apply — SetConfig, ReloadConfig, SIGHUP) restated in
+  every status frame and returned by GetConfig; the frontend refetches
+  when a frame's generation is ahead of its copy, when a fetch failed, or
+  after a reconnect (the counter resets with the daemon, so reconnects
+  always force a refetch). Level-triggered by design: a missed edge can't
+  strand a client, and config edited behind the GUI's back (fanctl,
+  SIGHUP) appears within one tick. An unloaded config now shows a
+  "waiting for the curve configuration" card, never "No fan curves yet".
+- **Flat/trigger round-trip** (blocking): editors keep the raw pwm as
+  state and derive the percent display, so open-then-Apply writes back
+  exactly the stored values (previously pwm 80 → 31 % → 79).
+- **Disconnect wording**: banner + status page now say the state is
+  unknown from this window — firmware auto only if the daemon stopped.
+- **Estimates marked**: curve-card "duty now" shows ≈ + "estimate" (the
+  daemon's hysteresis/dwell/smoothing/floors aren't in that number); the
+  temp chart domain auto-expands past 20–100 °C instead of clamping, and
+  the graph editor's live marker clamps to the frame edge with the true
+  reading instead of vanishing.
+- **Keyboard/screen-reader basics**: activatable rows/cards are real
+  buttons, dialogs have role/aria-modal/focus trap/focus restore, spin
+  steppers and selects are labelled, the header menu has menu semantics
+  and Escape-close. (Full SR polish on the SVG editor stays out of scope;
+  point editing has a keyboard path via the SpinRows.)
+- **Chart timeline**: history is trimmed by sample age (no hardcoded
+  2 s tick assumption) and the x axis is real time, so disconnect gaps
+  keep their width.
+
+Verified end-to-end against a dry-run daemon: launch-while-down →
+recovery, SIGHUP config change appearing untouched, daemon restart with
+config edited while down, disconnect wording. 214 workspace tests,
+clippy -D warnings (both workspaces), tsc + vite clean.
+
+Review round 7 (2026-07-18, follow-up from the same agent — three fixed,
+keyboard graph-point selection explicitly deferred by Anoop):
+
+- **Settings payload versioned**: `get_channel_settings` and the three
+  channel-write commands now return
+  `{ channels, config_generation }` (mirroring the curve payload), and
+  the App staleness check compares both payloads' generations against
+  the status stream. Closes the partial-refresh hole: if a generation
+  bump refetched both payloads and only the curves fetch succeeded, the
+  old map-shaped settings payload had no generation to flag it stale —
+  it stayed wrong until the next config change.
+- **Temp domains widen everywhere**: `CurveSparkline` and the graph
+  editor grow their 20–100 °C base domain (10° steps) to fit any curve
+  point — points past 100 °C are legal config and were clipped or
+  uneditable. Editor point bounds are now absolute 0–110 °C via the
+  spin row; dragging stays clamped to the visible frame so the domain
+  can't run away mid-drag. The sparkline's live marker parks at the
+  frame edge instead of disappearing when the reading is off-domain.
+- **Accessible names**: every Dialog takes a required `label`
+  (aria-label on the sheet), Switch takes `ariaLabel` (SwitchRow and
+  both mix-member lists pass one), the channel card's curve Select, the
+  new-curve name input and the flat editor's slider are labelled.
+- **PWM ≠ duty wording**: channel properties' "Min duty" (raw 0–255)
+  is now "Min PWM" with a pwm unit and its % duty equivalent in the
+  subtitle; "Curve offset" gained the pwm unit.
+
+Verified: dashboard smoke test against a dry-run daemon with a curve
+point at 105 °C rendering un-clipped; workspace tests, clippy
+-D warnings (both workspaces), fmt, tsc + vite all clean.
+
+## What remains
+
+- [x] **Manual click-through** ✅ passed 2026-07-17 (Anoop, dry-run app): all five dialogs,
+      point drag/add/remove, window drag + double-click-maximize + close
+      on niri, sniff test next to GNOME Settings (phase 9/10 exit criteria).
+- [ ] **Commit phases 9–10** (Anoop handles git).
+- [ ] **Pre-cutover health check** of the live (old-snapshot) service —
+      the ~2026-07-09 burn-in checkup is overdue: `systemctl status fand`,
+      `journalctl -u fand` grep FAILSAFE/implausible/restore, memory trend.
+- [ ] **THE CUTOVER** (ends the 2026-07-04 deployment freeze, one shot):
+      1. migrate /etc/fand/config.toml to the new schema (content should
+         match config/fand.example.toml for this machine) **before**
+         `sudo scripts/install.sh` — install.sh keeps an existing config
+         and runs `fand --check` against it;
+      2. `cargo build --release && sudo scripts/install.sh && sudo
+         systemctl restart fand`;
+      3. verify live: `fanctl status`, GUI against the real socket,
+         journal clean, then a fresh burn-in watch.
+- [ ] **Phase 8c — `fanctl calibrate <channel>`**: still deferred until
+      wanted; explicitly not in the cutover scope.

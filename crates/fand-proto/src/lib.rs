@@ -110,7 +110,13 @@ impl Response {
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum ResponseData {
     Status(Status),
-    Config { toml: String },
+    Config {
+        toml: String,
+        /// The daemon's config generation this text corresponds to; lets a
+        /// client tell whether a later status frame outdates its copy.
+        #[serde(default)]
+        generation: u64,
+    },
 }
 
 /// One snapshot of the daemon's world, produced once per control tick.
@@ -120,6 +126,14 @@ pub struct Status {
     /// happens per channel, not per sensor).
     pub temps: BTreeMap<String, f64>,
     pub channels: BTreeMap<String, ChannelStatus>,
+    /// Bumped on every successful config apply (set_config, reload,
+    /// SIGHUP). Level-triggered change signal: a client compares this
+    /// against the generation its config copy came from and refetches on
+    /// mismatch — restated every frame, so a missed edge cannot strand a
+    /// client on stale config. Restarts reset it to 0; clients must also
+    /// refetch on reconnect.
+    #[serde(default)]
+    pub config_generation: u64,
 }
 
 /// PWM values are raw 0-255 (what hwmon and the config speak). Clients
@@ -158,6 +172,7 @@ mod tests {
                     override_remaining_s: None,
                 },
             )]),
+            config_generation: 3,
         }
     }
 
@@ -211,10 +226,19 @@ mod tests {
     fn config_response_round_trips() {
         let resp = Response::ok(ResponseData::Config {
             toml: "[daemon]\n".into(),
+            generation: 7,
         });
         let json = serde_json::to_string(&resp).unwrap();
         assert!(json.contains(r#""kind":"config""#));
         assert_eq!(serde_json::from_str::<Response>(&json).unwrap(), resp);
+    }
+
+    /// Frames from a pre-generation daemon must still parse (as gen 0).
+    #[test]
+    fn missing_config_generation_defaults_to_zero() {
+        let json = r#"{"temps":{},"channels":{}}"#;
+        let status: Status = serde_json::from_str(json).unwrap();
+        assert_eq!(status.config_generation, 0);
     }
 
     #[test]

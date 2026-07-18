@@ -11,15 +11,16 @@ use serde::Serialize;
 
 use crate::socket_path;
 
-/// Mirrors `fand_core::config::CurveConfig` for the frontend, minus the
-/// graph hysteresis fields (edited in the curve editor, phase 10). Trigger
-/// curves are surfaced read-only until the phase-10 editor gains controls.
+/// Mirrors `fand_core::config::CurveConfig` for the frontend.
 #[derive(Debug, Clone, Serialize)]
 #[serde(tag = "kind", rename_all = "lowercase")]
 pub enum CurveInfo {
     Graph {
         sensor: String,
         points: Vec<(i32, u16)>,
+        hysteresis_up: f64,
+        hysteresis_down: f64,
+        response_seconds: u64,
     },
     Mix {
         function: String,
@@ -45,9 +46,12 @@ pub struct CurveEditorPayload {
     pub channels: BTreeMap<String, String>,
     /// Already-configured sensor names, for graph-curve sensor pickers.
     pub sensors: Vec<String>,
+    /// The daemon config generation this payload was built from; the
+    /// frontend compares it against status frames to spot staleness.
+    pub config_generation: u64,
 }
 
-pub(crate) fn payload_from_config(cfg: &fand_core::Config) -> CurveEditorPayload {
+pub(crate) fn payload_from_config(cfg: &fand_core::Config, generation: u64) -> CurveEditorPayload {
     let curves = cfg
         .curves
         .iter()
@@ -56,6 +60,9 @@ pub(crate) fn payload_from_config(cfg: &fand_core::Config) -> CurveEditorPayload
                 CurveConfig::Graph(g) => CurveInfo::Graph {
                     sensor: g.sensor.clone(),
                     points: g.points.clone(),
+                    hysteresis_up: g.hysteresis_up,
+                    hysteresis_down: g.hysteresis_down,
+                    response_seconds: g.response_seconds,
                 },
                 CurveConfig::Mix(m) => CurveInfo::Mix {
                     function: m.function.as_str().to_string(),
@@ -87,38 +94,43 @@ pub(crate) fn payload_from_config(cfg: &fand_core::Config) -> CurveEditorPayload
         curves,
         channels,
         sensors,
+        config_generation: generation,
     }
 }
 
-/// Validates an edited config and sends it to the daemon, returning the
-/// fresh daemon-confirmed `Config` — shared by every write command here and
-/// in `settings.rs` so none of them repeat the validate/send sequence.
+/// Validates an edited config, sends it to the daemon, then reads the
+/// applied config back — the daemon owns the generation number, and the
+/// re-read confirms what actually got applied. Shared by every write
+/// command here and in `settings.rs`.
 pub(crate) fn apply_config(
     updated: String,
     client: &mut Client,
-) -> Result<fand_core::Config, String> {
-    let cfg = fand_core::Config::from_toml_str(&updated).map_err(|e| e.to_string())?;
+) -> Result<(fand_core::Config, u64), String> {
+    fand_core::Config::from_toml_str(&updated).map_err(|e| e.to_string())?;
     client
         .request(Command::SetConfig { toml: updated })
         .map_err(|e| e.to_string())?;
-    Ok(cfg)
+    let (applied, generation) = client.get_config().map_err(|e| e.to_string())?;
+    let cfg = fand_core::Config::from_toml_str(&applied).map_err(|e| e.to_string())?;
+    Ok((cfg, generation))
 }
 
 fn apply(updated: String, client: &mut Client) -> Result<CurveEditorPayload, String> {
-    apply_config(updated, client).map(|cfg| payload_from_config(&cfg))
+    apply_config(updated, client).map(|(cfg, generation)| payload_from_config(&cfg, generation))
 }
 
 fn connect() -> Result<(Client, String), String> {
     let mut client = Client::connect(socket_path()).map_err(|e| e.to_string())?;
-    let current = client.get_config().map_err(|e| e.to_string())?;
+    let (current, _) = client.get_config().map_err(|e| e.to_string())?;
     Ok((client, current))
 }
 
 #[tauri::command]
 pub fn get_curve_editor_data() -> Result<CurveEditorPayload, String> {
-    let (_, toml_text) = connect()?;
+    let mut client = Client::connect(socket_path()).map_err(|e| e.to_string())?;
+    let (toml_text, generation) = client.get_config().map_err(|e| e.to_string())?;
     let cfg = fand_core::Config::from_toml_str(&toml_text).map_err(|e| e.to_string())?;
-    Ok(payload_from_config(&cfg))
+    Ok(payload_from_config(&cfg, generation))
 }
 
 /// Replaces an existing graph curve's points. Returns the fresh,
@@ -154,6 +166,125 @@ pub fn set_graph_sensor(name: String, sensor: String) -> Result<CurveEditorPaylo
     let (mut client, current) = connect()?;
     let updated =
         fand_core::set_graph_sensor(&current, &name, &sensor).map_err(|e| e.to_string())?;
+    apply(updated, &mut client)
+}
+
+/// Applies a graph-curve edit as one batch — sensor, points, hysteresis and
+/// response dwell in a single daemon round trip, so the editor's Apply can
+/// never leave a half-edited curve on the hardware.
+#[tauri::command]
+pub fn apply_graph_curve(
+    name: String,
+    sensor: String,
+    points: Vec<(i32, u8)>,
+    hysteresis_up: f64,
+    hysteresis_down: f64,
+    response_seconds: u64,
+) -> Result<CurveEditorPayload, String> {
+    let (mut client, current) = connect()?;
+    let updated = fand_core::update_graph_curve(
+        &current,
+        &name,
+        &sensor,
+        &points,
+        hysteresis_up,
+        hysteresis_down,
+        response_seconds,
+    )
+    .map_err(|e| e.to_string())?;
+    apply(updated, &mut client)
+}
+
+/// Creates a new flat curve holding a constant pwm.
+#[tauri::command]
+pub fn create_flat_curve(name: String, pwm: u8) -> Result<CurveEditorPayload, String> {
+    let (mut client, current) = connect()?;
+    let updated = fand_core::create_flat_curve(&current, &name, pwm).map_err(|e| e.to_string())?;
+    apply(updated, &mut client)
+}
+
+/// Changes an existing flat curve's constant pwm.
+#[tauri::command]
+pub fn set_flat_pwm(name: String, pwm: u8) -> Result<CurveEditorPayload, String> {
+    let (mut client, current) = connect()?;
+    let updated = fand_core::set_flat_pwm(&current, &name, pwm).map_err(|e| e.to_string())?;
+    apply(updated, &mut client)
+}
+
+/// Creates a new mix curve combining `members` with `function`.
+#[tauri::command]
+pub fn create_mix_curve(
+    name: String,
+    function: String,
+    members: Vec<String>,
+) -> Result<CurveEditorPayload, String> {
+    let (mut client, current) = connect()?;
+    let updated = fand_core::create_mix_curve(&current, &name, &function, &members)
+        .map_err(|e| e.to_string())?;
+    apply(updated, &mut client)
+}
+
+/// Changes an existing mix curve's combining function. The daemon-side
+/// validation re-checks the safety rule that `min`/`average` are explicit
+/// opt-ins; clients must keep displaying the chosen function.
+#[tauri::command]
+pub fn set_mix_function(name: String, function: String) -> Result<CurveEditorPayload, String> {
+    let (mut client, current) = connect()?;
+    let updated =
+        fand_core::set_mix_function(&current, &name, &function).map_err(|e| e.to_string())?;
+    apply(updated, &mut client)
+}
+
+/// Creates a new trigger curve (validation enforces the pwm1 ban and the
+/// deadband ordering).
+#[tauri::command]
+pub fn create_trigger_curve(
+    name: String,
+    sensor: String,
+    idle_temp: f64,
+    idle_pwm: u8,
+    load_temp: f64,
+    load_pwm: u8,
+    response_seconds: u64,
+) -> Result<CurveEditorPayload, String> {
+    let (mut client, current) = connect()?;
+    let updated = fand_core::create_trigger_curve(
+        &current,
+        &name,
+        &sensor,
+        idle_temp,
+        idle_pwm,
+        load_temp,
+        load_pwm,
+        response_seconds,
+    )
+    .map_err(|e| e.to_string())?;
+    apply(updated, &mut client)
+}
+
+/// Applies a trigger-curve edit as one batch, mirroring `apply_graph_curve`.
+#[tauri::command]
+pub fn apply_trigger_curve(
+    name: String,
+    sensor: String,
+    idle_temp: f64,
+    idle_pwm: u8,
+    load_temp: f64,
+    load_pwm: u8,
+    response_seconds: u64,
+) -> Result<CurveEditorPayload, String> {
+    let (mut client, current) = connect()?;
+    let updated = fand_core::update_trigger_curve(
+        &current,
+        &name,
+        &sensor,
+        idle_temp,
+        idle_pwm,
+        load_temp,
+        load_pwm,
+        response_seconds,
+    )
+    .map_err(|e| e.to_string())?;
     apply(updated, &mut client)
 }
 

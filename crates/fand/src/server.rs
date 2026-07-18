@@ -202,6 +202,7 @@ mod tests {
                     override_remaining_s: None,
                 },
             )]),
+            config_generation: 0,
         }
     }
 
@@ -291,13 +292,14 @@ mod tests {
             cmd.reply
                 .send(Response::ok(ResponseData::Config {
                     toml: "[daemon]\n".into(),
+                    generation: 0,
                 }))
                 .unwrap();
         });
         send_line(&mut client, r#"{"version":1,"cmd":"get_config"}"#);
         let resp = read_response(&mut client);
         assert!(resp.ok, "{resp:?}");
-        let Some(ResponseData::Config { toml }) = resp.data else {
+        let Some(ResponseData::Config { toml, .. }) = resp.data else {
             panic!("expected config data, got {resp:?}");
         };
         assert_eq!(toml, "[daemon]\n");

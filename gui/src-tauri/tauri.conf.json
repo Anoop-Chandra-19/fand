@@ -14,7 +14,8 @@
       {
         "title": "fand",
         "width": 980,
-        "height": 700
+        "height": 700,
+        "decorations": false
       }
     ],
     "security": {

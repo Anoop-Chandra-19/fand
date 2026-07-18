@@ -341,7 +341,8 @@ fn parse_point(s: &str) -> Result<(i32, u8)> {
 }
 
 fn fetch_config(socket: &Path) -> Result<String> {
-    Ok(connect(socket)?.get_config()?)
+    let (toml, _generation) = connect(socket)?.get_config()?;
+    Ok(toml)
 }
 
 /// Accept a raw PWM (`140`) or a duty percentage (`55%`) — the wire always

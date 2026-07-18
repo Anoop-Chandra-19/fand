@@ -53,10 +53,27 @@ export function useChannelSettings() {
     [runWrite],
   );
 
+  const setOffsetPwm = useCallback(
+    (channel: string, offset: number) => runWrite("set_offset_pwm", { channel, offset }),
+    [runWrite],
+  );
+
   return {
     data,
     error,
+    refresh,
     setMinPwm,
     setSmoothingSeconds,
+    setOffsetPwm,
   };
+}
+
+/** Cancels a manual override; the next status frame reflects the change. */
+export async function clearOverride(channel: string): Promise<string | null> {
+  try {
+    await invoke("clear_override", { channel });
+    return null;
+  } catch (e) {
+    return String(e);
+  }
 }

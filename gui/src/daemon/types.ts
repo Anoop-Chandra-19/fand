@@ -13,6 +13,9 @@ export interface ChannelStatus {
 export interface Status {
   temps: Record<string, number>;
   channels: Record<string, ChannelStatus>;
+  /** Bumped by the daemon on every successful config apply; compared
+   * against the config payloads' generation to spot stale copies. */
+  config_generation: number;
 }
 
 export interface Sample {
@@ -31,12 +34,19 @@ export function dutyPercent(pwm: number): number {
 export type CurvePoint = [number, number];
 
 /** A curve owns its temperature source (graph), combines other curves'
- * outputs (mix), or is a constant (flat). */
+ * outputs (mix), is a constant (flat), or latches between two duties
+ * (trigger). */
 export type CurveInfo =
-  | { kind: "graph"; sensor: string; points: CurvePoint[] }
+  | {
+      kind: "graph";
+      sensor: string;
+      points: CurvePoint[];
+      hysteresis_up: number;
+      hysteresis_down: number;
+      response_seconds: number;
+    }
   | { kind: "mix"; function: string; members: string[] }
   | { kind: "flat"; pwm: number }
-  // Read-only until the phase-10 editor gains trigger controls.
   | {
       kind: "trigger";
       sensor: string;
@@ -53,14 +63,19 @@ export interface CurveEditorPayload {
   channels: Record<string, string>;
   /** Already-configured sensor names, for graph-curve sensor pickers. */
   sensors: string[];
+  /** The daemon config generation this payload was built from. */
+  config_generation: number;
 }
 
 // Mirrors gui/src-tauri/src/settings.rs's ChannelSettings.
 export interface ChannelSettings {
   min_pwm: number;
   smoothing_seconds: number;
-  /** Read-only until the phase-10 editor gains a control for it. */
   offset_pwm: number;
 }
 
-export type ChannelSettingsPayload = Record<string, ChannelSettings>;
+export interface ChannelSettingsPayload {
+  channels: Record<string, ChannelSettings>;
+  /** The daemon config generation this payload was built from. */
+  config_generation: number;
+}

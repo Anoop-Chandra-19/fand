@@ -1,39 +1,115 @@
 @import "tailwindcss";
 
-/* libadwaita dark named colors — the app should pass for a native GNOME
-   app. Chart series are the GNOME palette, CVD-validated against the
-   effective card surface (#363636). */
+/* libadwaita dark — the only theme fand ships. Every value here is a
+   libadwaita stylesheet value (docs/RESEARCH.md §B.2–B.5); the goal is to
+   pass a side-by-side sniff test against a real GNOME app. Variable names
+   mirror the design-system tokens so future theming is a value swap. */
 @theme {
-  --font-sans: "Adwaita Sans", "Cantarell", "Inter", system-ui, sans-serif;
+  --font-sans:
+    "Adwaita Sans", "Inter", "Cantarell", system-ui, sans-serif;
+  --font-mono:
+    "Adwaita Mono", "AdwaitaMono Nerd Font Mono", "Iosevka", ui-monospace,
+    monospace;
 
-  --color-window: #242424; /* window_bg_color */
-  --color-card: rgb(255 255 255 / 8%); /* card_bg_color */
-  --color-popover: #383838; /* popover_bg_color — chart tooltips */
+  /* Surfaces */
+  --color-window: #222226; /* window_bg_color */
+  --color-view: #1d1d20; /* view_bg_color — chart/editor wells */
+  --color-headerbar: #2e2e32; /* headerbar_bg_color */
+  --color-card: rgb(255 255 255 / 8%); /* card_bg_color — a lift, not a hue */
+  --color-popover: #36363a; /* popover_bg_color */
+  --color-dialog: #36363a; /* dialog_bg_color */
+
+  /* Text — dim is opacity on fg, never a grey hex */
   --color-ink: #ffffff;
   --color-dim: rgb(255 255 255 / 55%); /* .dim-label */
   --color-separator: rgb(255 255 255 / 10%);
 
-  --color-accent: #78aeed; /* accent_color */
-  --color-success: #26a269;
-  --color-warning: #f8e45c; /* warning_color */
-  --color-error-bg: #c01c28; /* error_bg_color */
-  --color-error: #ff7b63; /* error_color */
+  /* Accent — interaction + suggested action only, never decoration.
+     Runtime-switchable: Preferences rewrites these three from the
+     --accent-* hue table below. */
+  --color-accent: #81d0ff; /* standalone text/icon, lightened for dark */
+  --color-accent-bg: #3584e4; /* filled: suggested action, switch fill */
+  --color-accent-badge: rgb(53 132 228 / 22%);
 
-  --color-series-1: #62a0ea; /* GNOME blue 2 */
+  /* Semantic status */
+  --color-success: #78e9ab;
+  --color-warning: #f8e45c; /* warning_color */
+  --color-warning-bg: #cd9309;
+  --color-error: #ff7b63;
+  --color-error-bg: #c01c28;
+  --color-destructive-bg: #c01c28;
+
+  /* Chart series — GNOME palette, assigned by first appearance, a sensor
+     is never re-colored. CVD-validated against the card surface. */
+  --color-series-1: #62a0ea; /* blue 2 */
   --color-series-2: #33d17a; /* green 3 */
   --color-series-3: #ffa348; /* orange 2 */
   --color-series-4: #dc8add; /* purple 1 */
+
+  /* Corner radii (libadwaita metrics) */
+  --radius-button: 9px;
+  --radius-card: 12px;
+  --radius-dialog: 15px;
+  --radius-popover: 15px;
+  --radius-row: 6px;
+
+  /* Shadows — cards lift subtly; dialogs float */
+  --shadow-card: 0 1px 3px rgb(0 0 6 / 25%);
+  --shadow-popover: 0 2px 8px rgb(0 0 0 / 40%);
+  --shadow-dialog: 0 6px 24px rgb(0 0 0 / 45%);
 }
 
 @layer base {
+  :root {
+    /* Interaction fills from the style-class cheat sheet (§B.5) */
+    --flat-hover-fill: rgb(255 255 255 / 7%);
+    --flat-active-fill: rgb(255 255 255 / 16%);
+    --headerbar-shade: rgb(0 0 6 / 36%);
+
+    /* System accent hues (GNOME 47+). fand ships blue; Preferences can
+       honor a different chosen accent by rewriting the three accent
+       tokens from this table. Filled (…-bg) vs standalone pairs. */
+    --accent-blue-bg: #3584e4;
+    --accent-blue: #81d0ff;
+    --accent-teal-bg: #2190a4;
+    --accent-teal: #7bdff2;
+    --accent-green-bg: #3a944a;
+    --accent-green: #8de698;
+    --accent-orange-bg: #ed5b00;
+    --accent-orange: #ffbe6f;
+    --accent-purple-bg: #9141ac;
+    --accent-purple: #dc8add;
+  }
+
+  html,
+  body,
+  #root {
+    height: 100%;
+  }
+
+  html {
+    /* GNOME body text ≈ 11 pt. On <html> so every rem-based size (the
+       whole type scale) is a percentage of the libadwaita base. */
+    font-size: 15px;
+  }
+
   body {
     @apply bg-window font-sans text-ink antialiased;
-    font-size: 15px; /* GNOME body text ≈ 11 pt */
     font-synthesis: none;
     text-rendering: optimizeLegibility;
+    margin: 0;
+    overflow: hidden; /* the shell's content pane owns scrolling */
     /* This app is always dark, never follows the OS toggle — without this,
        native controls (select, scrollbar) render in light mode regardless
        of our own colors, clashing hard against every dark surface. */
     color-scheme: dark;
+  }
+}
+
+@layer utilities {
+  /* Every live readout gets this — digits must not jitter as values tick. */
+  .numeric {
+    font-family: var(--font-mono);
+    font-variant-numeric: tabular-nums;
   }
 }

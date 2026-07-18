@@ -1,120 +1,139 @@
-import { useState } from "react";
-import { Line, LineChart, ResponsiveContainer, YAxis } from "recharts";
-import type { ChannelStatus, Sample } from "../daemon/types";
+import { Badge } from "../adw/Badge";
+import { Card } from "../adw/Card";
+import { MenuIcon } from "../adw/icons";
+import { Select } from "../adw/rows";
+import type { ChannelStatus, CurveInfo } from "../daemon/types";
 import { dutyPercent } from "../daemon/types";
+import { CurveSparkline } from "./CurveSparkline";
 
-type WriteResult = Promise<string | null>;
-
-interface Props {
-  name: string;
-  label?: string;
-  channel: ChannelStatus;
-  history: Sample[];
-  /** The curve this channel binds (from the editor payload). */
-  boundCurve?: string;
-  curveNames?: string[];
-  setChannelCurve?: (channel: string, curve: string) => WriteResult;
+/** A labelled readout: dim caption over a mono tabular value. */
+export function Metric({ label, value }: { label: string; value: string }) {
+  return (
+    <div className="text-right">
+      <div className="text-[0.82rem] leading-[1.2] text-dim">{label}</div>
+      <div className="numeric">{value}</div>
+    </div>
+  );
 }
 
-const selectClass =
-  "rounded-md bg-white/10 px-2 py-1 text-[13px] outline-none focus:ring-1 focus:ring-accent";
+function SparkPwm({ history, color }: { history: number[]; color: string }) {
+  const W = 320;
+  const H = 30;
+  const pad = 2;
+  const n = history.length;
+  const x = (i: number) => pad + (n <= 1 ? 0 : (i / (n - 1)) * (W - pad * 2));
+  const y = (p: number) => pad + (1 - p / 255) * (H - pad * 2);
+  const d = history
+    .map((p, i) => `${i === 0 ? "M" : "L"}${x(i).toFixed(1)},${y(p).toFixed(1)}`)
+    .join(" ");
+  const fill = n > 1 ? `${d} L${x(n - 1).toFixed(1)},${H - pad} L${pad},${H - pad} Z` : "";
+  return (
+    <svg viewBox={`0 0 ${W} ${H}`} width="100%" height={H} aria-hidden="true">
+      {fill && <path d={fill} fill={color} opacity="0.08" />}
+      {d && <path d={d} fill="none" stroke={color} strokeWidth={2} />}
+    </svg>
+  );
+}
 
+/**
+ * A Fans-section card: live duty/RPM readouts, recent-pwm sparkline and
+ * the curve binding. The ⋮ button opens the channel-properties dialog.
+ */
 export function ChannelCard({
   name,
   label,
   channel,
-  history,
   boundCurve,
+  curves,
+  temps,
   curveNames,
-  setChannelCurve,
-}: Props) {
-  const [error, setError] = useState<string | null>(null);
+  pwmHistory,
+  onSetCurve,
+  onProps,
+}: {
+  name: string;
+  label?: string;
+  channel: ChannelStatus;
+  boundCurve?: string;
+  curves: Record<string, CurveInfo>;
+  temps: Record<string, number>;
+  curveNames: string[];
+  pwmHistory: number[];
+  onSetCurve: (channel: string, curve: string) => void;
+  onProps: () => void;
+}) {
   const overriding = channel.mode === "override";
-  const spark = history.map((s) => ({
-    at: s.at,
-    pwm: s.status.channels[name]?.current_pwm ?? null,
-  }));
-
-  const canAssign = boundCurve !== undefined && curveNames && setChannelCurve;
-
+  const curve = boundCurve ? curves[boundCurve] : undefined;
+  const sparkColor = overriding ? "var(--color-warning)" : "var(--color-accent)";
   return (
-    <article className="flex flex-col gap-3 rounded-xl bg-card px-4 py-3.5">
+    <Card className="flex flex-col gap-[13px]">
       <header className="flex items-start justify-between gap-2">
-        <div>
-          <h3 className="font-bold">{name}</h3>
-          {label && <span className="text-[13px] text-dim">{label}</span>}
-          {!canAssign && boundCurve && (
-            <div className="mt-0.5 text-[11px] text-dim">{boundCurve}</div>
-          )}
+        <div className="min-w-0">
+          <h3 className="numeric m-0 text-[1.18rem] font-bold">{name}</h3>
+          <div className="mt-px text-[0.82rem] text-dim">{label ?? ""}</div>
         </div>
-        {overriding ? (
-          <span
-            className="rounded-full bg-warning/15 px-2.5 py-0.5 text-xs font-bold whitespace-nowrap text-warning"
-            role="status"
+        <div className="flex items-center gap-1">
+          {overriding ? (
+            <Badge tone="warning">
+              override{channel.override_remaining_s !== undefined
+                ? ` · ${channel.override_remaining_s}s`
+                : ""}
+            </Badge>
+          ) : (
+            <Badge>curve</Badge>
+          )}
+          <button
+            type="button"
+            onClick={onProps}
+            aria-label="Channel properties"
+            className="flex h-7 w-7 cursor-pointer items-center justify-center rounded-button text-dim hover:bg-[var(--flat-hover-fill)] hover:text-ink"
           >
-            Override · {channel.override_remaining_s ?? 0}s left
+            <MenuIcon />
+          </button>
+        </div>
+      </header>
+
+      <div className="flex items-end justify-between gap-3">
+        <div className="flex items-baseline gap-[6px]">
+          <span className="numeric text-[46px] font-light leading-[0.9]">
+            {dutyPercent(channel.current_pwm)}
           </span>
-        ) : (
-          <span className="rounded-full bg-white/10 px-2.5 py-0.5 text-xs whitespace-nowrap text-dim">
-            Curve
+          <span className="text-[1.18rem] font-light text-dim">%</span>
+          <span className="ml-[2px] text-[0.82rem] text-dim">
+            duty · pwm {channel.current_pwm}
+          </span>
+        </div>
+        <div className="flex gap-[22px]">
+          <Metric label="Fan speed" value={`${channel.rpm.toLocaleString()} RPM`} />
+          <Metric label="Target" value={`${dutyPercent(channel.target_pwm)} %`} />
+        </div>
+      </div>
+
+      <div className="-mx-[2px]" aria-hidden="true">
+        <SparkPwm history={pwmHistory} color={sparkColor} />
+      </div>
+
+      <div className="flex items-center gap-[10px] border-t border-separator pt-3">
+        <span className="w-[34px] shrink-0 text-[0.82rem] text-dim">curve</span>
+        <Select
+          value={boundCurve ?? ""}
+          options={curveNames}
+          mono
+          ariaLabel={`Curve for ${name}`}
+          onChange={(c) => onSetCurve(name, c)}
+          className="flex-1"
+        />
+        {curve?.kind === "graph" && (
+          <div className="max-w-[118px] flex-1">
+            <CurveSparkline points={curve.points} liveTemp={temps[curve.sensor]} height={30} />
+          </div>
+        )}
+        {curve?.kind === "mix" && (
+          <span className="numeric text-[0.82rem] text-dim">
+            {curve.function}({curve.members.length})
           </span>
         )}
-      </header>
-      <div className="flex items-end justify-between gap-3">
-        <div>
-          <span className="text-4xl leading-none font-light tabular-nums">
-            {dutyPercent(channel.current_pwm)}%
-          </span>
-          <span className="ml-1.5 text-[13px] text-dim">duty</span>
-        </div>
-        <dl className="flex gap-5">
-          <div>
-            <dt className="text-xs text-dim">Fan speed</dt>
-            <dd className="text-[15px] tabular-nums">
-              {channel.rpm.toLocaleString()} RPM
-            </dd>
-          </div>
-          <div>
-            <dt className="text-xs text-dim">Curve target</dt>
-            <dd className="text-[15px] tabular-nums">
-              {dutyPercent(channel.target_pwm)}%
-            </dd>
-          </div>
-        </dl>
       </div>
-      <div className="-mx-1.5 -mb-1.5" aria-hidden="true">
-        <ResponsiveContainer width="100%" height={36}>
-          <LineChart data={spark} margin={{ top: 2, right: 0, bottom: 2, left: 0 }}>
-            <YAxis domain={[0, 255]} hide />
-            <Line
-              dataKey="pwm"
-              stroke={overriding ? "var(--color-warning)" : "var(--color-accent)"}
-              strokeWidth={2}
-              dot={false}
-              isAnimationActive={false}
-            />
-          </LineChart>
-        </ResponsiveContainer>
-      </div>
-      {canAssign && (
-        <div className="flex flex-col gap-1.5 border-t border-separator pt-2.5">
-          <div className="flex items-center gap-2 text-[13px]">
-            <span className="w-10 shrink-0 text-dim">curve</span>
-            <select
-              value={boundCurve}
-              onChange={(e) => void setChannelCurve(name, e.target.value).then(setError)}
-              className={`flex-1 ${selectClass}`}
-            >
-              {curveNames.map((c) => (
-                <option key={c} value={c}>
-                  {c}
-                </option>
-              ))}
-            </select>
-          </div>
-          {error && <p className="text-xs text-error">{error}</p>}
-        </div>
-      )}
-    </article>
+    </Card>
   );
 }

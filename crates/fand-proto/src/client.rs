@@ -75,10 +75,11 @@ impl Client {
         }
     }
 
-    /// Current applied config as TOML text.
-    pub fn get_config(&mut self) -> Result<String> {
+    /// Current applied config as TOML text, plus the daemon's config
+    /// generation it corresponds to (see `Status::config_generation`).
+    pub fn get_config(&mut self) -> Result<(String, u64)> {
         match self.request(Command::GetConfig)?.data {
-            Some(ResponseData::Config { toml }) => Ok(toml),
+            Some(ResponseData::Config { toml, generation }) => Ok((toml, generation)),
             other => Err(unexpected_payload(other)),
         }
     }
@@ -177,6 +178,7 @@ mod tests {
                     override_remaining_s: None,
                 },
             )]),
+            config_generation: 0,
         }
     }
 

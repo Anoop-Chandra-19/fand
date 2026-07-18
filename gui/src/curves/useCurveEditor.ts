@@ -62,6 +62,98 @@ export function useCurveEditor() {
     [runWrite],
   );
 
+  /** Applies a full graph-curve edit as one batch (one SetConfig). */
+  const applyGraphCurve = useCallback(
+    (
+      name: string,
+      sensor: string,
+      points: CurvePoint[],
+      hysteresisUp: number,
+      hysteresisDown: number,
+      responseSeconds: number,
+    ) =>
+      runWrite("apply_graph_curve", {
+        name,
+        sensor,
+        points,
+        hysteresisUp,
+        hysteresisDown,
+        responseSeconds,
+      }),
+    [runWrite],
+  );
+
+  /** Creates a new flat curve holding a constant pwm. */
+  const createFlatCurve = useCallback(
+    (name: string, pwm: number) => runWrite("create_flat_curve", { name, pwm }),
+    [runWrite],
+  );
+
+  /** Changes an existing flat curve's constant pwm. */
+  const setFlatPwm = useCallback(
+    (name: string, pwm: number) => runWrite("set_flat_pwm", { name, pwm }),
+    [runWrite],
+  );
+
+  /** Creates a new mix curve combining `members` with `function`. */
+  const createMixCurve = useCallback(
+    (name: string, fn: string, members: string[]) =>
+      runWrite("create_mix_curve", { name, function: fn, members }),
+    [runWrite],
+  );
+
+  /** Changes an existing mix curve's combining function. */
+  const setMixFunction = useCallback(
+    (name: string, fn: string) => runWrite("set_mix_function", { name, function: fn }),
+    [runWrite],
+  );
+
+  /** Creates a new trigger curve (the daemon enforces the pwm1 ban). */
+  const createTriggerCurve = useCallback(
+    (
+      name: string,
+      sensor: string,
+      idleTemp: number,
+      idlePwm: number,
+      loadTemp: number,
+      loadPwm: number,
+      responseSeconds: number,
+    ) =>
+      runWrite("create_trigger_curve", {
+        name,
+        sensor,
+        idleTemp,
+        idlePwm,
+        loadTemp,
+        loadPwm,
+        responseSeconds,
+      }),
+    [runWrite],
+  );
+
+  /** Applies a full trigger-curve edit as one batch. */
+  const applyTriggerCurve = useCallback(
+    (
+      name: string,
+      sensor: string,
+      idleTemp: number,
+      idlePwm: number,
+      loadTemp: number,
+      loadPwm: number,
+      responseSeconds: number,
+    ) =>
+      runWrite("apply_trigger_curve", {
+        name,
+        sensor,
+        idleTemp,
+        idlePwm,
+        loadTemp,
+        loadPwm,
+        responseSeconds,
+      }),
+    [runWrite],
+  );
+
   const addMixMember = useCallback(
     (name: string, member: string) => runWrite("add_mix_member", { name, member }),
     [runWrite],
@@ -83,9 +175,17 @@ export function useCurveEditor() {
   return {
     data,
     error,
+    refresh,
     setCurvePoints,
     createGraphCurve,
     setGraphSensor,
+    applyGraphCurve,
+    createFlatCurve,
+    setFlatPwm,
+    createMixCurve,
+    setMixFunction,
+    createTriggerCurve,
+    applyTriggerCurve,
     addMixMember,
     removeMixMember,
     setChannelCurve,
