@@ -18,7 +18,7 @@ function PrefGroup({
       <div className="px-1">
         <h2 className="m-0 font-bold">{title}</h2>
         {description && (
-          <p className="mb-0 mt-[2px] text-[0.82rem] leading-[1.4] text-dim">{description}</p>
+          <p className="mb-0 mt-0.5 text-[0.82rem] leading-[1.4] text-dim">{description}</p>
         )}
       </div>
       {children}
@@ -55,11 +55,11 @@ export function PreferencesDialog({
   const [reloadError, setReloadError] = useState<string | null>(null);
   return (
     <Dialog width={560} label="Preferences" onClose={onClose}>
-      <div className="flex shrink-0 items-center justify-between gap-2 border-b border-separator py-[10px] pl-4 pr-3">
+      <div className="flex shrink-0 items-center justify-between gap-2 border-b border-separator py-2.5 pl-4 pr-3">
         <div className="font-bold">Preferences</div>
         <CloseButton onClose={onClose} />
       </div>
-      <div className="flex flex-col gap-[22px] overflow-auto px-[22px] pb-[26px] pt-5">
+      <div className="flex flex-col gap-5.5 overflow-auto px-5.5 pb-6.5 pt-5">
         <PrefGroup
           title="Appearance"
           description="fand is dark-only, matching its libadwaita styling. Accent tints suggested buttons, switches and curve lines — the cpu/gpu chart series and the warning marker keep their fixed colors."

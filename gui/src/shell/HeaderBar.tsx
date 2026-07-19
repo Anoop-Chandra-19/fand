@@ -76,9 +76,9 @@ export function HeaderBar({
   return (
     <header
       data-tauri-drag-region
-      className="relative z-2 flex h-[47px] shrink-0 select-none items-center justify-between px-2 shadow-[0_1px_0_var(--headerbar-shade)]"
+      className="relative z-2 flex h-11.75 shrink-0 select-none items-center justify-between px-2 shadow-[0_1px_0_var(--headerbar-shade)]"
     >
-      <div className="z-1 min-w-[40px]" />
+      <div className="z-1 min-w-10" />
       <div className="pointer-events-none absolute inset-0 flex flex-col items-center justify-center gap-px">
         <span className="text-[1rem] font-bold leading-[1.1]">{title}</span>
         {subtitle && <span className="text-[0.82rem] leading-[1.1] text-dim">{subtitle}</span>}
@@ -100,7 +100,7 @@ export function HeaderBar({
             ref={menuRef}
             role="menu"
             aria-label="Primary menu"
-            className="absolute right-0 top-10 z-60 min-w-[214px] rounded-popover bg-popover p-[6px] shadow-popover"
+            className="absolute right-0 top-10 z-60 min-w-53.5 rounded-popover bg-popover p-1.5 shadow-popover"
           >
             {menuItems.map((item) => (
               <button
@@ -116,7 +116,7 @@ export function HeaderBar({
                   setMenuOpen(false);
                   item.onClick();
                 }}
-                className="block w-full cursor-pointer rounded-row px-[10px] py-[7px] text-left text-ink hover:bg-[var(--flat-hover-fill)] focus-visible:bg-[var(--flat-hover-fill)] focus-visible:outline-none"
+                className="block w-full cursor-pointer rounded-row px-2.5 py-1.75 text-left text-ink hover:bg-(--flat-hover-fill) focus-visible:bg-(--flat-hover-fill) focus-visible:outline-none"
               >
                 {item.label}
               </button>
@@ -152,8 +152,8 @@ function HeaderButton({
       aria-haspopup={expanded === undefined ? undefined : "menu"}
       aria-expanded={expanded}
       onClick={onClick}
-      className={`flex h-[34px] w-[34px] cursor-pointer items-center justify-center text-ink transition-colors duration-200 ${
-        round ? "rounded-full bg-white/9 hover:bg-white/13" : "rounded-button hover:bg-[var(--flat-hover-fill)]"
+      className={`flex h-8.5 w-8.5 cursor-pointer items-center justify-center text-ink transition-colors duration-200 ${
+        round ? "rounded-full bg-white/9 hover:bg-white/13" : "rounded-button hover:bg-(--flat-hover-fill)"
       }`}
     >
       {children}

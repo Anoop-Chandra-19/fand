@@ -46,7 +46,7 @@ function usedByOf(
 
 function SectionHeader({ trailing, children }: { trailing?: string; children: string }) {
   return (
-    <div className="mb-[10px] flex items-baseline justify-between px-[2px]">
+    <div className="mb-2.5 flex items-baseline justify-between px-0.5">
       <h2 className="m-0 text-[1rem] font-bold tracking-[0.01em]">{children}</h2>
       {trailing && <span className="text-[0.82rem] text-dim">{trailing}</span>}
     </div>
@@ -178,7 +178,7 @@ function App() {
     );
   } else {
     body = (
-      <main className="mx-auto flex w-full max-w-[1080px] flex-col gap-[22px] px-6 pb-7 pt-5">
+      <main className="mx-auto flex w-full max-w-270 flex-col gap-5.5 px-6 pb-7 pt-5">
         <section>
           <SectionHeader trailing="live">Temperatures</SectionHeader>
           <TempChartCard history={history} sensors={sensors} labels={SENSOR_LABELS} temps={temps} />
@@ -227,15 +227,15 @@ function App() {
           {/* An unloaded config is not an empty one: never show "no
               curves" (or offer edits) while no config has arrived. */}
           {!config && (
-            <div className="rounded-card bg-card px-5 py-[18px] shadow-card">
+            <div className="rounded-card bg-card px-5 py-4.5 shadow-card">
               <span className="text-[0.82rem] leading-[1.4] text-dim">
                 Waiting for the curve configuration — retrying automatically…
               </span>
             </div>
           )}
           {config && curveNames.length === 0 && (
-            <div className="mb-3 flex flex-wrap items-center gap-[14px] rounded-card bg-card px-5 py-[18px] shadow-card">
-              <div className="flex min-w-[220px] flex-1 flex-col gap-[2px]">
+            <div className="mb-3 flex flex-wrap items-center gap-3.5 rounded-card bg-card px-5 py-4.5 shadow-card">
+              <div className="flex min-w-55 flex-1 flex-col gap-0.5">
                 <span className="font-bold">No fan curves yet</span>
                 <span className="text-[0.82rem] leading-[1.4] text-dim">
                   fand won't take control of a header until a sensor is mapped to a fan duty. Add

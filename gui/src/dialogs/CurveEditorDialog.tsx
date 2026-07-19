@@ -70,7 +70,7 @@ function DeleteCurveRow({
         }}
         trailing={
           <span
-            className={`inline-flex items-center gap-[6px] text-[0.82rem] font-bold ${
+            className={`inline-flex items-center gap-1.5 text-[0.82rem] font-bold ${
               inUse ? "text-dim" : "text-error"
             }`}
           >
@@ -293,8 +293,8 @@ function GraphEditor({
         right={<Button variant="suggested" onClick={apply}>Apply</Button>}
       />
       <div className="flex min-h-0 flex-1">
-        <div className="flex min-w-0 flex-1 flex-col gap-[10px] py-4 pl-4 pr-2">
-          <div className="min-h-[300px] flex-1 rounded-[10px] bg-view p-1">
+        <div className="flex min-w-0 flex-1 flex-col gap-2.5 py-4 pl-4 pr-2">
+          <div className="min-h-75 flex-1 rounded-[10px] bg-view p-1">
             <svg
               ref={svgRef}
               viewBox={`0 0 ${W} ${H}`}
@@ -408,7 +408,7 @@ function GraphEditor({
               ))}
             </svg>
           </div>
-          <div className="flex items-center gap-[10px]">
+          <div className="flex items-center gap-2.5">
             <span className="text-[0.82rem] text-dim">
               {pts.length} points · click to add, drag to reshape
             </span>
@@ -420,7 +420,7 @@ function GraphEditor({
           </div>
         </div>
 
-        <div className="flex w-[296px] shrink-0 flex-col gap-[18px] overflow-auto border-l border-separator bg-white/2 p-4">
+        <div className="flex w-74 shrink-0 flex-col gap-4.5 overflow-auto border-l border-separator bg-white/2 p-4">
           <div className="flex flex-col gap-2">
             <div className={groupTitle}>Source</div>
             <BoxedList>
@@ -460,7 +460,7 @@ function GraphEditor({
                 onClick={removePoint}
                 trailing={
                   <span
-                    className={`inline-flex items-center gap-[6px] text-[0.82rem] font-bold ${
+                    className={`inline-flex items-center gap-1.5 text-[0.82rem] font-bold ${
                       pts.length <= 2 ? "text-dim" : "text-error"
                     }`}
                   >
@@ -554,13 +554,13 @@ function MixEditor({
   return (
     <Dialog width={468} label={`Edit mix curve ${name}`} onClose={onClose}>
       <DialogHeader
-        left={<div className="min-w-[34px]" />}
+        left={<div className="min-w-8.5" />}
         title={name}
         subtitle="mix curve · changes apply instantly"
         mono
         right={<CloseButton onClose={onClose} />}
       />
-      <div className="flex flex-col gap-[18px] overflow-auto p-4">
+      <div className="flex flex-col gap-4.5 overflow-auto p-4">
         <div className="flex flex-col gap-2">
           <div className={groupTitle}>Function</div>
           <BoxedList>
@@ -648,7 +648,7 @@ function FlatEditor({
         mono
         right={<Button variant="suggested" onClick={apply}>Apply</Button>}
       />
-      <div className="flex flex-col gap-[18px] overflow-auto p-4">
+      <div className="flex flex-col gap-4.5 overflow-auto p-4">
         <div className="flex flex-col items-center gap-3 rounded-card bg-card px-4 py-6 shadow-card">
           <span className="numeric text-[46px] font-light leading-none">
             {duty}
@@ -723,7 +723,7 @@ function TriggerEditor({
         mono
         right={<Button variant="suggested" onClick={apply}>Apply</Button>}
       />
-      <div className="flex flex-col gap-[18px] overflow-auto p-4">
+      <div className="flex flex-col gap-4.5 overflow-auto p-4">
         <div className="flex flex-col gap-2">
           <div className={groupTitle}>Source</div>
           <BoxedList>

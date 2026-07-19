@@ -50,7 +50,7 @@ export function ChannelPropsDialog({
 
   return (
     <Dialog width={468} label={`${name} channel properties`} onClose={onClose}>
-      <div className="flex shrink-0 items-center justify-between gap-2 border-b border-separator py-[10px] pl-4 pr-3">
+      <div className="flex shrink-0 items-center justify-between gap-2 border-b border-separator py-2.5 pl-4 pr-3">
         <div>
           <div className="font-mono font-bold">{name}</div>
           {label && <div className="text-[0.82rem] text-dim">{label}</div>}

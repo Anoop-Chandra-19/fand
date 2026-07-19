@@ -109,8 +109,8 @@ export function NewCurveDialog({
           </Button>
         }
       />
-      <div className="flex flex-col gap-[18px] overflow-auto p-4">
-        <div className="flex flex-col gap-[6px]">
+      <div className="flex flex-col gap-4.5 overflow-auto p-4">
+        <div className="flex flex-col gap-1.5">
           <BoxedList>
             <ActionRow
               title="Name"
@@ -124,7 +124,7 @@ export function NewCurveDialog({
                   }
                   placeholder="e.g. cpu_case"
                   spellCheck={false}
-                  className="w-[150px] border-none bg-transparent text-right font-mono text-ink outline-none"
+                  className="w-37.5 border-none bg-transparent text-right font-mono text-ink outline-none"
                   style={{ caretColor: "var(--color-accent)" }}
                 />
               }
@@ -139,7 +139,7 @@ export function NewCurveDialog({
         </div>
 
         {kind === "graph" && (
-          <div className="flex flex-col gap-[6px]">
+          <div className="flex flex-col gap-1.5">
             <div className={groupTitle}>Graph</div>
             <BoxedList>
               <ComboRow
@@ -154,7 +154,7 @@ export function NewCurveDialog({
         )}
 
         {kind === "flat" && (
-          <div className="flex flex-col gap-[6px]">
+          <div className="flex flex-col gap-1.5">
             <div className={groupTitle}>Flat</div>
             <BoxedList>
               <SpinRow
@@ -170,7 +170,7 @@ export function NewCurveDialog({
         )}
 
         {kind === "mix" && (
-          <div className="flex flex-col gap-[6px]">
+          <div className="flex flex-col gap-1.5">
             <div className={groupTitle}>Mix</div>
             <BoxedList>
               <ComboRow
@@ -210,7 +210,7 @@ export function NewCurveDialog({
         )}
 
         {kind === "trigger" && (
-          <div className="flex flex-col gap-[6px]">
+          <div className="flex flex-col gap-1.5">
             <div className={groupTitle}>Trigger</div>
             <BoxedList>
               <ComboRow

@@ -10,13 +10,13 @@ export function AboutDialog({
 }) {
   return (
     <Dialog width={400} label="About fand" onClose={onClose}>
-      <div className="flex shrink-0 justify-end px-3 pt-[10px]">
+      <div className="flex shrink-0 justify-end px-3 pt-2.5">
         <CloseButton onClose={onClose} />
       </div>
-      <div className="flex flex-col items-center gap-[6px] overflow-auto px-6 pb-[26px] pt-1 text-center">
+      <div className="flex flex-col items-center gap-1.5 overflow-auto px-6 pb-6.5 pt-1 text-center">
         <div className="text-[1.81rem] font-extrabold tracking-[-0.01em]">fand</div>
         <div className="numeric text-[0.82rem] text-dim">version 0.1.0</div>
-        <p className="mb-1 mt-[6px] max-w-[300px] leading-[1.45] text-dim">
+        <p className="mb-1 mt-1.5 max-w-75 leading-[1.45] text-dim">
           A fan-control daemon, CLI and GUI for Linux — one privileged daemon owns the fan
           hardware and the thermal failsafe.
         </p>
