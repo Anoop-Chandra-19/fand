@@ -1,9 +1,24 @@
 # fand GUI
 
 Tauri 2 + React + TypeScript desktop dashboard for the fand daemon.
-Runs unprivileged as the user (socket is group-`fand`); the Rust backend
-(`src-tauri/`) subscribes to the daemon's status stream via
-`fand_proto::client` and re-emits frames as Tauri events for React.
+Runs unprivileged as the user (socket is group-`fand`).
+
+The Rust backend (`src-tauri/`) is the service layer: it subscribes to
+the daemon's status stream via `fand_proto::client` and owns the only
+config copy in the process (`src-tauri/src/state.rs`). Every `status`
+event carries the frame plus the newest same-instance config covering
+it (right after writes, config may transiently run ahead of queued
+frames — never behind, never across a daemon restart); writes emit a
+`config` event with the applied result and return any
+applied-with-caveat warning in their invoke result (one toast per
+operation, no cross-channel ordering), `daemon-down` repeats while the
+socket is dead, and `daemon-restarted` closes draft dialogs when a
+restart is detected mid-stream. Config versions are the daemon's `(instance,
+generation)` pair — never compared across instances (see `state.rs`).
+Writes are serialized by one gate and sent as compare-and-set, so
+concurrent edits (including fanctl's) conflict instead of silently
+overwriting each other. React is a pure presentation layer — it renders
+the last event and never fetches, caches, or reconciles daemon state.
 
 ```fish
 cd gui
@@ -24,15 +39,14 @@ daemon-side `cargo test/clippy --workspace` stay fast.
 
 `src/` is organized by feature, one folder per concern:
 
-- `daemon/` — everything that talks to the Rust backend: the TypeScript
-  mirror of the wire types and the Tauri-event hook. The GUI's twin of
-  `fand-proto`; write commands land here too when they arrive.
-- `dashboard/` — the read-only live view (temp chart, channel cards).
+- `daemon/` — the TypeScript mirror of the backend's payload types and
+  the one event hook (`useDaemonStatus`) every piece of daemon state
+  flows through.
+- `dashboard/` — the live view (temp chart, channel and curve cards).
+- `curves/`, `settings/` — thin write-command wrappers (`writes.ts`);
+  fire-and-report, no state.
+- `dialogs/` — the curve editors, channel properties, new-curve,
+  preferences and about dialogs.
+- `adw/` — the hand-rolled libadwaita-style component library.
+- `shell/` — CSD headerbar, accent handling, persisted prefs.
 - App shell (`main.tsx`, `App.tsx`, `index.css`) stays at the root.
-
-Future slices add sibling folders (`curves/` for the editor, `settings/`
-for the channel panel); a `components/` folder appears only once two
-features actually share a piece.
-
-Roadmap (PLAN.md §7): dashboard (this slice) → curve editor → channel
-settings panel.

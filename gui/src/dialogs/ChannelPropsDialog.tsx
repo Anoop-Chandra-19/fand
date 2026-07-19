@@ -1,7 +1,7 @@
 import { useState } from "react";
 import { CloseButton, Dialog } from "../adw/Dialog";
 import { BoxedList, ComboRow, SpinRow } from "../adw/rows";
-import type { ChannelSettings } from "../daemon/types";
+import type { ChannelSettings, WriteResult } from "../daemon/types";
 import { dutyPercent } from "../daemon/types";
 
 /**
@@ -27,14 +27,24 @@ export function ChannelPropsDialog({
   settings: ChannelSettings;
   boundCurve?: string;
   curveNames: string[];
-  setChannelCurve: (channel: string, curve: string) => Promise<string | null>;
-  setMinPwm: (channel: string, minPwm: number) => Promise<string | null>;
-  setSmoothingSeconds: (channel: string, seconds: number) => Promise<string | null>;
-  setOffsetPwm: (channel: string, offset: number) => Promise<string | null>;
+  setChannelCurve: (channel: string, curve: string) => Promise<WriteResult>;
+  setMinPwm: (channel: string, minPwm: number) => Promise<WriteResult>;
+  setSmoothingSeconds: (channel: string, seconds: number) => Promise<WriteResult>;
+  setOffsetPwm: (channel: string, offset: number) => Promise<WriteResult>;
   onClose: () => void;
 }) {
-  const [error, setError] = useState<string | null>(null);
-  const report = (err: string | null) => setError(err);
+  // One note line: errors in red, applied-with-caveat warnings in the
+  // dim style — a warning is a success, it must not read as a failure.
+  const [note, setNote] = useState<{ error: boolean; text: string } | null>(null);
+  const report = ({ error, warning }: WriteResult) => {
+    setNote(
+      error
+        ? { error: true, text: error }
+        : warning
+          ? { error: false, text: warning }
+          : null,
+    );
+  };
   const isPump = name === "pwm1";
   const floor = isPump ? 80 : 60;
 
@@ -83,7 +93,13 @@ export function ChannelPropsDialog({
             onChange={(v) => void setOffsetPwm(name, v).then(report)}
           />
         </BoxedList>
-        {error && <div className="px-1 text-[0.82rem] leading-[1.4] text-error">{error}</div>}
+        {note && (
+          <div
+            className={`px-1 text-[0.82rem] leading-[1.4] ${note.error ? "text-error" : "text-dim"}`}
+          >
+            {note.error ? note.text : `Applied — ${note.text}`}
+          </div>
+        )}
         <div className="px-1 text-[0.82rem] leading-[1.4] text-dim">
           Changes apply instantly through the daemon's validation.
         </div>

@@ -1,12 +1,13 @@
 import { useEffect, useRef, useState } from "react";
+import { listen } from "@tauri-apps/api/event";
 import { Banner } from "./adw/Banner";
 import { StatusPage } from "./adw/StatusPage";
 import { ToastOverlay } from "./adw/Toast";
 import { WarnIcon } from "./adw/icons";
 import { useDaemonStatus } from "./daemon/useDaemonStatus";
 import type { CurveInfo } from "./daemon/types";
-import { useCurveEditor } from "./curves/useCurveEditor";
-import { clearOverride, useChannelSettings } from "./settings/useChannelSettings";
+import { curveWrites } from "./curves/writes";
+import { clearOverride, setMinPwm, setOffsetPwm, setSmoothingSeconds } from "./settings/writes";
 import { ChannelCard } from "./dashboard/ChannelCard";
 import { AddCurveCard, CurveCard } from "./dashboard/CurveCard";
 import { TempChartCard } from "./dashboard/TempChart";
@@ -60,45 +61,9 @@ const grid = (min: number) => ({
 
 function App() {
   const [chartMinutes, setChartMinutes] = useState(loadChartMinutes);
-  const { connected, latest, history } = useDaemonStatus(chartWindowMs(chartMinutes));
-  const curveEditor = useCurveEditor();
-  const settings = useChannelSettings();
-  const { data: curveData, refresh: refreshCurves } = curveEditor;
-  const { data: settingsData, refresh: refreshSettings } = settings;
-
-  // Config self-heal. The daemon restates its config generation in every
-  // status frame (level-triggered, so a missed change can't strand us);
-  // refetch when our copies came from a different generation, when an
-  // earlier fetch failed, or after a reconnect — the counter restarts
-  // with the daemon, so a matching number across a reconnect proves
-  // nothing.
-  const syncing = useRef(false);
-  const forceSync = useRef(false);
-  useEffect(() => {
-    if (connected === false) forceSync.current = true;
-  }, [connected]);
-  useEffect(() => {
-    if (!latest || syncing.current) return;
-    // Strictly "frame is ahead of our copy": right after one of our own
-    // writes the copy is ahead of the last frame until the next tick, and
-    // a plain != would refetch in a loop until it arrives. The daemon
-    // restart case (counter reset to a lower value) is covered by
-    // forceSync — the socket drop always emits daemon-down first.
-    // Each payload carries its own generation: if one refetch fails while
-    // the other succeeds, the failed one alone stays flagged stale.
-    const stale =
-      forceSync.current ||
-      curveData === null ||
-      settingsData === null ||
-      curveData.config_generation < latest.config_generation ||
-      settingsData.config_generation < latest.config_generation;
-    if (!stale) return;
-    syncing.current = true;
-    void Promise.allSettled([refreshCurves(), refreshSettings()]).then((results) => {
-      syncing.current = false;
-      if (results.every((r) => r.status === "fulfilled")) forceSync.current = false;
-    });
-  }, [latest, curveData, settingsData, refreshCurves, refreshSettings]);
+  // The backend pushes status AND config; this component never fetches,
+  // caches or reconciles daemon state — it renders the last event.
+  const { connected, latest, config, history } = useDaemonStatus(chartWindowMs(chartMinutes));
 
   const [socketPath, setSocketPath] = useState<string | null>(null);
   useEffect(() => {
@@ -110,20 +75,45 @@ function App() {
   const [creating, setCreating] = useState(false);
   const [prefs, setPrefs] = useState(false);
   const [about, setAbout] = useState(false);
+  // A disconnect closes the editing dialogs explicitly: their drafts were
+  // against a daemon that is gone, and the config it restarts with may be
+  // different. Preferences/About are connection-independent and stay.
+  useEffect(() => {
+    if (connected === false) {
+      setEditing(null);
+      setPropsFor(null);
+      setCreating(false);
+    }
+  }, [connected]);
+  // Same rule for the fast-restart path: when the backend detects a
+  // restart mid-frame it reconnects immediately, so `connected` never
+  // goes false — this event is the only signal the drafts are stale.
+  useEffect(() => {
+    const unlisten = listen("daemon-restarted", () => {
+      setEditing(null);
+      setPropsFor(null);
+      setCreating(false);
+    });
+    return () => {
+      unlisten.then((f) => f());
+    };
+  }, []);
   const [accent, setAccent] = useState<Accent>(loadAccent);
   useEffect(() => applyAccent(accent), [accent]);
 
   const [toast, setToast] = useState<string | null>(null);
   const toastTimer = useRef<number | undefined>(undefined);
+  // Long messages (write warnings, error text) get proportionally more
+  // reading time than short confirmations.
   const flash = (msg: string) => {
     setToast(msg);
     window.clearTimeout(toastTimer.current);
-    toastTimer.current = window.setTimeout(() => setToast(null), 2600);
+    toastTimer.current = window.setTimeout(() => setToast(null), msg.length > 80 ? 8000 : 2600);
   };
 
-  const curves = curveData?.curves ?? {};
+  const curves = config?.curves ?? {};
   const curveNames = Object.keys(curves);
-  const channelCurves = curveData?.channels ?? {};
+  const channelCurves = config?.channels ?? {};
   const sensors = latest ? Object.keys(latest.temps) : [];
   const temps = latest?.temps ?? {};
 
@@ -132,14 +122,16 @@ function App() {
     : [];
 
   const setChannelCurve = (channel: string, curve: string) => {
-    void curveEditor.setChannelCurve(channel, curve).then((err) => {
-      flash(err ?? `${channel} now follows ${curve}`);
+    void curveWrites.setChannelCurve(channel, curve).then(({ error, warning }) => {
+      flash(error ?? warning ?? `${channel} now follows ${curve}`);
     });
   };
 
   const cancelOverrides = () => {
     for (const [name] of overriding) {
-      void clearOverride(name).then((err) => flash(err ?? "Override cleared"));
+      void clearOverride(name).then(({ error, warning }) =>
+        flash(error ?? warning ?? "Override cleared"),
+      );
     }
   };
 
@@ -210,9 +202,9 @@ function App() {
                   .filter((p): p is number => p !== undefined)}
                 onSetCurve={setChannelCurve}
                 onProps={() => {
-                  // A missing settings payload would make the dialog
-                  // silently not open; say so instead.
-                  if (settingsData?.channels[name]) setPropsFor(name);
+                  // A missing config would make the dialog silently not
+                  // open; say so instead.
+                  if (config?.channel_settings[name]) setPropsFor(name);
                   else flash("Channel settings not loaded yet — retrying in the background");
                 }}
               />
@@ -223,7 +215,7 @@ function App() {
         <section>
           <SectionHeader
             trailing={
-              curveData
+              config
                 ? curveNames.length
                   ? "reusable behaviors"
                   : "none configured"
@@ -233,15 +225,15 @@ function App() {
             Curves
           </SectionHeader>
           {/* An unloaded config is not an empty one: never show "no
-              curves" (or offer edits) while the fetch hasn't succeeded. */}
-          {!curveData && (
+              curves" (or offer edits) while no config has arrived. */}
+          {!config && (
             <div className="rounded-card bg-card px-5 py-[18px] shadow-card">
               <span className="text-[0.82rem] leading-[1.4] text-dim">
                 Waiting for the curve configuration — retrying automatically…
               </span>
             </div>
           )}
-          {curveData && curveNames.length === 0 && (
+          {config && curveNames.length === 0 && (
             <div className="mb-3 flex flex-wrap items-center gap-[14px] rounded-card bg-card px-5 py-[18px] shadow-card">
               <div className="flex min-w-[220px] flex-1 flex-col gap-[2px]">
                 <span className="font-bold">No fan curves yet</span>
@@ -252,7 +244,7 @@ function App() {
               </div>
             </div>
           )}
-          {curveData && (
+          {config && (
             <div style={grid(300)}>
               {Object.entries(curves).map(([name, info]) => (
                 <CurveCard
@@ -294,10 +286,10 @@ function App() {
           name={editing}
           info={curves[editing]}
           temps={temps}
-          sensors={curveData?.sensors ?? sensors}
+          sensors={config?.sensors ?? sensors}
           curveNames={curveNames}
           usedBy={usedByOf(curves, channelCurves, editing)}
-          writes={curveEditor}
+          writes={curveWrites}
           onDone={(msg) => {
             flash(msg);
             setEditing(null);
@@ -306,17 +298,17 @@ function App() {
         />
       )}
 
-      {propsFor && settings.data?.channels[propsFor] && (
+      {propsFor && config?.channel_settings[propsFor] && (
         <ChannelPropsDialog
           name={propsFor}
           label={CHANNEL_LABELS[propsFor]}
-          settings={settings.data.channels[propsFor]}
+          settings={config.channel_settings[propsFor]}
           boundCurve={channelCurves[propsFor]}
           curveNames={curveNames}
-          setChannelCurve={curveEditor.setChannelCurve}
-          setMinPwm={settings.setMinPwm}
-          setSmoothingSeconds={settings.setSmoothingSeconds}
-          setOffsetPwm={settings.setOffsetPwm}
+          setChannelCurve={curveWrites.setChannelCurve}
+          setMinPwm={setMinPwm}
+          setSmoothingSeconds={setSmoothingSeconds}
+          setOffsetPwm={setOffsetPwm}
           onClose={() => setPropsFor(null)}
         />
       )}
@@ -324,8 +316,8 @@ function App() {
       {creating && (
         <NewCurveDialog
           curves={curves}
-          sensors={curveData?.sensors ?? sensors}
-          writes={curveEditor}
+          sensors={config?.sensors ?? sensors}
+          writes={curveWrites}
           onDone={(msg, name, openEditor) => {
             flash(msg);
             setCreating(false);
@@ -349,9 +341,8 @@ function App() {
           onReloadConfig={async () => {
             try {
               await invoke("reload_config");
-              // Refetch right away for snappiness; the generation check
-              // against the status stream is the backstop either way.
-              void Promise.allSettled([refreshCurves(), refreshSettings()]);
+              // The generation bump reaches the backend with the next
+              // status frame, which carries the fresh config here.
               flash("Config reloaded from disk");
               return null;
             } catch (e) {

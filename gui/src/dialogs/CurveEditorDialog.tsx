@@ -3,10 +3,10 @@ import { Button } from "../adw/Button";
 import { CloseButton, Dialog, DialogHeader } from "../adw/Dialog";
 import { PlusIcon, TrashIcon } from "../adw/icons";
 import { ActionRow, BoxedList, ComboRow, SpinRow, Switch } from "../adw/rows";
-import type { CurveInfo, CurvePoint } from "../daemon/types";
+import type { CurveInfo, CurvePoint, WriteResult } from "../daemon/types";
 import { dutyPercent } from "../daemon/types";
 
-/** Writes shared by every editor variant; each returns null or an error. */
+/** Writes shared by every editor variant; each resolves to a WriteResult. */
 export interface CurveWrites {
   applyGraphCurve: (
     name: string,
@@ -15,11 +15,11 @@ export interface CurveWrites {
     hysteresisUp: number,
     hysteresisDown: number,
     responseSeconds: number,
-  ) => Promise<string | null>;
-  setFlatPwm: (name: string, pwm: number) => Promise<string | null>;
-  setMixFunction: (name: string, fn: string) => Promise<string | null>;
-  addMixMember: (name: string, member: string) => Promise<string | null>;
-  removeMixMember: (name: string, member: string) => Promise<string | null>;
+  ) => Promise<WriteResult>;
+  setFlatPwm: (name: string, pwm: number) => Promise<WriteResult>;
+  setMixFunction: (name: string, fn: string) => Promise<WriteResult>;
+  addMixMember: (name: string, member: string) => Promise<WriteResult>;
+  removeMixMember: (name: string, member: string) => Promise<WriteResult>;
   applyTriggerCurve: (
     name: string,
     sensor: string,
@@ -28,8 +28,8 @@ export interface CurveWrites {
     loadTemp: number,
     loadPwm: number,
     responseSeconds: number,
-  ) => Promise<string | null>;
-  deleteCurve: (name: string) => Promise<string | null>;
+  ) => Promise<WriteResult>;
+  deleteCurve: (name: string) => Promise<WriteResult>;
 }
 
 const groupTitle = "px-1 text-[0.82rem] font-bold tracking-[0.02em] text-dim";
@@ -63,9 +63,9 @@ function DeleteCurveRow({
         }
         activatable={!inUse}
         onClick={() => {
-          void writes.deleteCurve(name).then((err) => {
-            if (err) onError(err);
-            else onDone(`Curve ${name} deleted`);
+          void writes.deleteCurve(name).then(({ error, warning }) => {
+            if (error) onError(error);
+            else onDone(warning ?? `Curve ${name} deleted`);
           });
         }}
         trailing={
@@ -162,10 +162,10 @@ function GraphEditor({
   const PADB = 34;
   const iw = W - PADL - PADR;
   const ih = H - PADT - PADB;
-  // Absolute bounds a point's temperature may take (the failsafe owns
-  // everything from 115 °C up).
+  // Absolute bounds a point's temperature may take: the failsafe fires at
+  // ≥ 115 °C, so 114 is the last degree a curve can ever act on.
   const T_LO = 0;
-  const T_HI = 110;
+  const T_HI = 114;
   // The 20–100 °C base domain widens (in 10° steps) to fit off-range
   // points — they are legal config and must stay visible and editable.
   // Dragging is clamped to the visible frame, so only the spin row can
@@ -264,9 +264,9 @@ function GraphEditor({
   const apply = () => {
     void writes
       .applyGraphCurve(name, sensor, pts, hystUp, hystDown, response)
-      .then((err) => {
-        if (err) setError(err);
-        else onDone(`Curve ${name} applied`);
+      .then(({ error, warning }) => {
+        if (error) setError(error);
+        else onDone(warning ?? `Curve ${name} applied`);
       });
   };
 
@@ -537,8 +537,17 @@ function MixEditor({
   onDone,
   onClose,
 }: SharedProps & { info: Extract<CurveInfo, { kind: "mix" }>; curveNames: string[] }) {
-  const [error, setError] = useState<string | null>(null);
-  const report = (err: string | null) => setError(err);
+  // Instant-apply rows: errors in red; applied-with-caveat warnings in
+  // the dim style — a warning is a success and must not read as failure.
+  const [note, setNote] = useState<{ error: boolean; text: string } | null>(null);
+  const report = ({ error, warning }: WriteResult) =>
+    setNote(
+      error
+        ? { error: true, text: error }
+        : warning
+          ? { error: false, text: warning }
+          : null,
+    );
   // Every other curve is a candidate; the daemon rejects cycles and
   // dropping the last member, and those errors surface inline.
   const candidates = curveNames.filter((c) => c !== name);
@@ -594,8 +603,15 @@ function MixEditor({
             )}
           </BoxedList>
         </div>
-        <DeleteCurveRow name={name} usedBy={usedBy} writes={writes} onDone={onDone} onError={setError} />
-        <ErrorLine error={error} />
+        <DeleteCurveRow
+          name={name}
+          usedBy={usedBy}
+          writes={writes}
+          onDone={onDone}
+          onError={(e) => setNote({ error: true, text: e })}
+        />
+        <ErrorLine error={note?.error ? note.text : null} />
+        {note && !note.error && <div className={hint}>Applied — {note.text}</div>}
       </div>
     </Dialog>
   );
@@ -618,9 +634,9 @@ function FlatEditor({
   const [error, setError] = useState<string | null>(null);
   const duty = dutyPercent(pwm);
   const apply = () => {
-    void writes.setFlatPwm(name, pwm).then((err) => {
-      if (err) setError(err);
-      else onDone(`Curve ${name} applied`);
+    void writes.setFlatPwm(name, pwm).then(({ error, warning }) => {
+      if (error) setError(error);
+      else onDone(warning ?? `Curve ${name} applied`);
     });
   };
   return (
@@ -692,9 +708,9 @@ function TriggerEditor({
   const apply = () => {
     void writes
       .applyTriggerCurve(name, sensor, idleTemp, idlePwm, loadTemp, loadPwm, response)
-      .then((err) => {
-        if (err) setError(err);
-        else onDone(`Curve ${name} applied`);
+      .then(({ error, warning }) => {
+        if (error) setError(error);
+        else onDone(warning ?? `Curve ${name} applied`);
       });
   };
 
@@ -723,7 +739,7 @@ function TriggerEditor({
         <div className="flex flex-col gap-2">
           <div className={groupTitle}>Thresholds</div>
           <BoxedList>
-            <SpinRow title="Idle below" value={idleTemp} min={0} max={110} unit="°C" onChange={setIdleTemp} />
+            <SpinRow title="Idle below" value={idleTemp} min={0} max={114} unit="°C" onChange={setIdleTemp} />
             <SpinRow
               title="Idle duty"
               value={dutyPercent(idlePwm)}
@@ -732,7 +748,7 @@ function TriggerEditor({
               unit="%"
               onChange={(v) => setIdlePwm(fromDuty(v))}
             />
-            <SpinRow title="Load above" value={loadTemp} min={0} max={110} unit="°C" onChange={setLoadTemp} />
+            <SpinRow title="Load above" value={loadTemp} min={0} max={114} unit="°C" onChange={setLoadTemp} />
             <SpinRow
               title="Load duty"
               value={dutyPercent(loadPwm)}

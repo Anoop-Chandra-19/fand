@@ -1,6 +1,7 @@
 import { useState, type ReactNode } from "react";
 import { CloseButton, Dialog } from "../adw/Dialog";
 import { ActionRow, BoxedList, ComboRow, SpinRow } from "../adw/rows";
+import { dutyPercent } from "../daemon/types";
 import { ACCENTS, type Accent } from "../shell/accent";
 
 function PrefGroup({
@@ -137,8 +138,8 @@ export function PreferencesDialog({
               trailing={<span className={`numeric ${dimValue}`}>115 °C</span>}
             />
             <ActionRow
-              title="Min duty floors"
-              subtitle="fans never stop; pwm1 carries the AIO pump inline"
+              title="Min PWM floors"
+              subtitle={`fans never stop; pwm1 carries the AIO pump inline · = ${dutyPercent(60)}/${dutyPercent(80)} % duty`}
               trailing={<span className={`numeric ${dimValue}`}>60 · 80 on pwm1</span>}
             />
             <ActionRow

@@ -13,8 +13,12 @@ use serde::{Deserialize, Serialize};
 
 pub mod client;
 
-/// Protocol version stamped into every message.
-pub const PROTOCOL_VERSION: u32 = 1;
+/// Protocol version stamped into every message. v2 (2026-07-18): SetConfig
+/// carries a mandatory expected [`ConfigVersion`] (compare-and-set) and is
+/// answered with a structured [`SetConfigResult`] instead of an empty ok.
+/// There is no v1 interop — daemon, fanctl and GUI ship together (single
+/// cutover); a version mismatch is answered with a clear error.
+pub const PROTOCOL_VERSION: u32 = 2;
 
 /// Default socket path.
 pub const SOCKET_PATH: &str = "/run/fand/fand.sock";
@@ -45,9 +49,16 @@ pub enum Command {
     SubscribeStatus,
     /// Current applied config as TOML text (comments preserved).
     GetConfig,
-    /// Validate, hot-apply, then persist to the daemon's config path.
+    /// Validate, hot-apply, then persist to the daemon's config path —
+    /// but only if `expected` still matches the daemon's current config
+    /// version (compare-and-set). Every SetConfig is a whole-config
+    /// read-modify-write, so an unconditional overwrite could silently
+    /// erase a change that landed after the client's read; `expected` is
+    /// mandatory to make that impossible. The unconditional administrative
+    /// escape hatch is `ReloadConfig` (edit the file, ask for a reload).
     SetConfig {
         toml: String,
+        expected: ConfigVersion,
     },
     /// Re-read the config file from disk and hot-apply it.
     ReloadConfig,
@@ -63,14 +74,48 @@ pub enum Command {
     },
 }
 
+/// One config state of one daemon process. Generations are only ordered
+/// *within* an instance (see [`Status::instance`]); two versions are the
+/// same state iff both fields match, and versions from different instances
+/// are incomparable — never older or newer.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ConfigVersion {
+    pub instance: u64,
+    pub generation: u64,
+}
+
+impl std::fmt::Display for ConfigVersion {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "generation {} of instance {:x}",
+            self.generation, self.instance
+        )
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Response {
     pub version: u32,
     pub ok: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub error: Option<String>,
+    /// Structured error class, so clients never have to parse `error`
+    /// text. Only set for errors that need distinct handling.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub code: Option<ErrorCode>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub data: Option<ResponseData>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ErrorCode {
+    /// The daemon could not say whether the command took effect — e.g. the
+    /// server's wait for the engine thread timed out but the queued command
+    /// may still run. Clients must report "may or may not have applied",
+    /// never a plain failure.
+    OutcomeUnknown,
 }
 
 impl Response {
@@ -79,6 +124,7 @@ impl Response {
             version: PROTOCOL_VERSION,
             ok: true,
             error: None,
+            code: None,
             data: Some(data),
         }
     }
@@ -90,6 +136,7 @@ impl Response {
             version: PROTOCOL_VERSION,
             ok: true,
             error: None,
+            code: None,
             data: None,
         }
     }
@@ -99,7 +146,17 @@ impl Response {
             version: PROTOCOL_VERSION,
             ok: false,
             error: Some(message.into()),
+            code: None,
             data: None,
+        }
+    }
+
+    /// An error whose *outcome* is unknown — the command may still have
+    /// taken (or later take) effect.
+    pub fn err_outcome_unknown(message: impl Into<String>) -> Self {
+        Self {
+            code: Some(ErrorCode::OutcomeUnknown),
+            ..Self::err(message)
         }
     }
 }
@@ -116,7 +173,53 @@ pub enum ResponseData {
         /// client tell whether a later status frame outdates its copy.
         #[serde(default)]
         generation: u64,
+        /// The daemon instance the generation belongs to (see
+        /// `Status::instance`).
+        #[serde(default)]
+        instance: u64,
     },
+    SetConfig(SetConfigResult),
+}
+
+/// Every possible outcome of a SetConfig, as wire data (a SetConfig
+/// response is always `ok: true` with this payload — refusals are
+/// outcomes, not transport errors). The three "applied" concerns —
+/// did it apply, is it on disk, what version is it now — are separate
+/// fields precisely so clients can be honest about partial success.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "outcome", rename_all = "snake_case")]
+pub enum SetConfigResult {
+    /// The config is applied (and persisted, unless the daemon runs
+    /// dry-run, which never touches the real config file).
+    Applied {
+        toml: String,
+        version: ConfigVersion,
+        persistence: Persistence,
+    },
+    /// The running daemon *is* using this config, but writing it to the
+    /// config file failed — a daemon restart will revert it. A successful
+    /// mutation with a warning, never a plain failure.
+    AppliedButNotPersisted {
+        toml: String,
+        version: ConfigVersion,
+        error: String,
+    },
+    /// `expected` did not match the daemon's current version; nothing was
+    /// parsed, applied or written. `current` is where the daemon actually
+    /// is, so the client can say what moved.
+    Conflict { current: ConfigVersion },
+    /// The config failed validation or could not be applied; the previous
+    /// config remains in force.
+    Rejected { error: String },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Persistence {
+    Persisted,
+    /// Applied in memory only — dry-run daemons (and test engines without
+    /// a config path) never write the real config file.
+    DryRun,
 }
 
 /// One snapshot of the daemon's world, produced once per control tick.
@@ -134,6 +237,13 @@ pub struct Status {
     /// refetch on reconnect.
     #[serde(default)]
     pub config_generation: u64,
+    /// Random token drawn once per daemon process; every generation number
+    /// this daemon hands out belongs to it. Generations are only ordered
+    /// *within* one instance — a restarted daemon's counter starts over, so
+    /// clients must treat config from a different instance as incomparable,
+    /// never as older or newer.
+    #[serde(default)]
+    pub instance: u64,
 }
 
 /// PWM values are raw 0-255 (what hwmon and the config speak). Clients
@@ -173,13 +283,14 @@ mod tests {
                 },
             )]),
             config_generation: 3,
+            instance: 42,
         }
     }
 
     #[test]
     fn request_wire_format_is_stable() {
         let json = serde_json::to_string(&Request::new(Command::GetStatus)).unwrap();
-        assert_eq!(json, r#"{"version":1,"cmd":"get_status"}"#);
+        assert_eq!(json, r#"{"version":2,"cmd":"get_status"}"#);
     }
 
     #[test]
@@ -192,8 +303,76 @@ mod tests {
         let json = serde_json::to_string(&Request::new(cmd)).unwrap();
         assert_eq!(
             json,
-            r#"{"version":1,"cmd":"set_override","channel":"pwm2","pwm":140,"ttl_seconds":60}"#
+            r#"{"version":2,"cmd":"set_override","channel":"pwm2","pwm":140,"ttl_seconds":60}"#
         );
+    }
+
+    /// The CAS pair is mandatory: a SetConfig without `expected` must not
+    /// parse — there is no unconditional whole-config overwrite in v2.
+    #[test]
+    fn set_config_requires_expected_version() {
+        let json = r#"{"version":2,"cmd":"set_config","toml":"[daemon]\n"}"#;
+        assert!(serde_json::from_str::<Request>(json).is_err());
+
+        let cmd = Command::SetConfig {
+            toml: "[daemon]\n".into(),
+            expected: ConfigVersion {
+                instance: 42,
+                generation: 7,
+            },
+        };
+        let json = serde_json::to_string(&Request::new(cmd)).unwrap();
+        assert_eq!(
+            json,
+            r#"{"version":2,"cmd":"set_config","toml":"[daemon]\n","expected":{"instance":42,"generation":7}}"#
+        );
+    }
+
+    #[test]
+    fn set_config_results_round_trip() {
+        let version = ConfigVersion {
+            instance: 42,
+            generation: 8,
+        };
+        let results = [
+            SetConfigResult::Applied {
+                toml: "[daemon]\n".into(),
+                version,
+                persistence: Persistence::Persisted,
+            },
+            SetConfigResult::Applied {
+                toml: "[daemon]\n".into(),
+                version,
+                persistence: Persistence::DryRun,
+            },
+            SetConfigResult::AppliedButNotPersisted {
+                toml: "[daemon]\n".into(),
+                version,
+                error: "disk full".into(),
+            },
+            SetConfigResult::Conflict { current: version },
+            SetConfigResult::Rejected {
+                error: "min_pwm below floor".into(),
+            },
+        ];
+        for result in results {
+            let resp = Response::ok(ResponseData::SetConfig(result));
+            let json = serde_json::to_string(&resp).unwrap();
+            assert!(json.contains(r#""kind":"set_config""#), "{json}");
+            assert_eq!(serde_json::from_str::<Response>(&json).unwrap(), resp);
+        }
+    }
+
+    #[test]
+    fn outcome_unknown_error_carries_code() {
+        let resp = Response::err_outcome_unknown("control loop did not respond in time");
+        let json = serde_json::to_string(&resp).unwrap();
+        assert!(json.contains(r#""code":"outcome_unknown""#), "{json}");
+        let parsed: Response = serde_json::from_str(&json).unwrap();
+        assert_eq!(parsed.code, Some(ErrorCode::OutcomeUnknown));
+        // A plain error has no code at all on the wire.
+        let plain = serde_json::to_string(&Response::err("nope")).unwrap();
+        assert!(!plain.contains("code"), "{plain}");
     }
 
     #[test]
@@ -204,6 +383,10 @@ mod tests {
             Command::GetConfig,
             Command::SetConfig {
                 toml: "[daemon]\ntick_seconds = 2\n".into(),
+                expected: ConfigVersion {
+                    instance: 42,
+                    generation: 7,
+                },
             },
             Command::ReloadConfig,
             Command::SetOverride {
@@ -227,18 +410,22 @@ mod tests {
         let resp = Response::ok(ResponseData::Config {
             toml: "[daemon]\n".into(),
             generation: 7,
+            instance: 42,
         });
         let json = serde_json::to_string(&resp).unwrap();
         assert!(json.contains(r#""kind":"config""#));
         assert_eq!(serde_json::from_str::<Response>(&json).unwrap(), resp);
     }
 
-    /// Frames from a pre-generation daemon must still parse (as gen 0).
+    /// The serde defaults on generation/instance are parse robustness, not
+    /// v1 interop (v1 peers are refused by the version check) — but a
+    /// frame missing them must still deserialize rather than error.
     #[test]
     fn missing_config_generation_defaults_to_zero() {
         let json = r#"{"temps":{},"channels":{}}"#;
         let status: Status = serde_json::from_str(json).unwrap();
         assert_eq!(status.config_generation, 0);
+        assert_eq!(status.instance, 0);
     }
 
     #[test]
@@ -249,7 +436,7 @@ mod tests {
 
     #[test]
     fn unknown_command_is_rejected() {
-        assert!(serde_json::from_str::<Request>(r#"{"version":1,"cmd":"reboot"}"#).is_err());
+        assert!(serde_json::from_str::<Request>(r#"{"version":2,"cmd":"reboot"}"#).is_err());
     }
 
     #[test]
@@ -262,6 +449,6 @@ mod tests {
     #[test]
     fn error_response_omits_data() {
         let json = serde_json::to_string(&Response::err("nope")).unwrap();
-        assert_eq!(json, r#"{"version":1,"ok":false,"error":"nope"}"#);
+        assert_eq!(json, r#"{"version":2,"ok":false,"error":"nope"}"#);
     }
 }

@@ -18,7 +18,10 @@ use std::time::{Duration, Instant};
 use anyhow::{bail, Context, Result};
 use fand_core::config::SensorConfig;
 use fand_core::{apply_offset, window_ticks, Config, CurveTree, Ramp, RampConfig};
-use fand_proto::{ChannelStatus, Command, Response, ResponseData, Status};
+use fand_proto::{
+    ChannelStatus, Command, ConfigVersion, Persistence, Response, ResponseData, SetConfigResult,
+    Status,
+};
 
 use crate::failsafe::SharedPaths;
 use crate::hub::{EngineCommand, StatusHub};
@@ -127,6 +130,11 @@ pub struct Engine {
     /// Bumped on every successful config apply and restated in every
     /// status frame, so clients can tell when their config copy is stale.
     config_generation: u64,
+    /// Random per-process token stamped on every status frame and config
+    /// response. Generations are only ordered within one instance; the
+    /// token lets clients refuse to compare them across a daemon restart.
+    /// Survives reload (same process), changes on restart (new process).
+    instance: u64,
 }
 
 impl Engine {
@@ -283,6 +291,7 @@ impl Engine {
             unrestored: Vec::new(),
             config_path: None,
             config_generation: 0,
+            instance: random_instance()?,
         })
     }
 
@@ -503,6 +512,9 @@ impl Engine {
         new.failsafe_paths = self.failsafe_paths.clone();
         new.config_path = self.config_path.clone();
         new.config_generation = self.config_generation.wrapping_add(1);
+        // Same process, same instance — `build` drew a fresh token for
+        // `new`, but a reload must not look like a restart to clients.
+        new.instance = self.instance;
         *self = new;
         if let Some(shared) = &self.failsafe_paths {
             shared.set(self.enable_paths());
@@ -516,27 +528,88 @@ impl Engine {
         Ok(())
     }
 
-    /// Hot-apply a client-supplied config, then persist it as the config
-    /// file (skipped in dry-run — a dev daemon must not rewrite the real
-    /// file). Apply-then-persist order means a config that fails against
-    /// live hardware never lands on disk.
-    fn set_config(&mut self, toml_text: &str) -> Result<()> {
-        self.reload(toml_text)?;
+    /// Current config identity — what a client's `expected` must match.
+    fn config_version(&self) -> ConfigVersion {
+        ConfigVersion {
+            instance: self.instance,
+            generation: self.config_generation,
+        }
+    }
+
+    /// Compare-and-set config write. The version compare happens before
+    /// anything is parsed or applied, so a conflict leaves memory, disk,
+    /// generation, overrides and hardware exactly as they were. After the
+    /// compare: hot-apply, then persist (apply-then-persist order means a
+    /// config that fails against live hardware never lands on disk; a
+    /// persist failure after a successful apply is still a successful
+    /// mutation and is reported as such). Returns the wire outcome plus
+    /// whether control targets changed.
+    fn set_config(&mut self, toml_text: &str, expected: ConfigVersion) -> (SetConfigResult, bool) {
+        let current = self.config_version();
+        if expected != current {
+            eprintln!(
+                "fand: set_config conflict: client expected {expected}, daemon is at {current}"
+            );
+            return (SetConfigResult::Conflict { current }, false);
+        }
+        if let Err(e) = self.reload(toml_text) {
+            return (
+                SetConfigResult::Rejected {
+                    error: format!("{e:#}"),
+                },
+                false,
+            );
+        }
+        let toml = self.config_toml.clone();
+        let version = self.config_version();
         if self.dry_run {
             eprintln!("fand: [dry-run] config applied in memory only, not persisted");
-            return Ok(());
+            return (
+                SetConfigResult::Applied {
+                    toml,
+                    version,
+                    persistence: Persistence::DryRun,
+                },
+                true,
+            );
         }
-        if let Some(path) = self.config_path.clone() {
-            persist_config(&path, toml_text).with_context(|| {
-                format!(
-                    "config APPLIED to the running daemon but could not be \
-                     persisted to {} — a restart will revert it",
-                    path.display()
+        // No config path only happens for test engines — same in-memory
+        // semantics as dry-run.
+        let Some(path) = self.config_path.clone() else {
+            return (
+                SetConfigResult::Applied {
+                    toml,
+                    version,
+                    persistence: Persistence::DryRun,
+                },
+                true,
+            );
+        };
+        match persist_config(&path, toml_text) {
+            Ok(()) => {
+                eprintln!("fand: config persisted to {}", path.display());
+                (
+                    SetConfigResult::Applied {
+                        toml,
+                        version,
+                        persistence: Persistence::Persisted,
+                    },
+                    true,
                 )
-            })?;
-            eprintln!("fand: config persisted to {}", path.display());
+            }
+            Err(e) => (
+                SetConfigResult::AppliedButNotPersisted {
+                    toml,
+                    version,
+                    error: format!(
+                        "config APPLIED to the running daemon but could not be \
+                         persisted to {}: {e:#} — a daemon restart will revert it",
+                        path.display()
+                    ),
+                },
+                true,
+            ),
         }
-        Ok(())
     }
 
     /// Tick until `shutdown` is set (SIGTERM/SIGINT), publishing a status
@@ -616,6 +689,7 @@ impl Engine {
                 Response::ok(ResponseData::Config {
                     toml: self.config_toml.clone(),
                     generation: self.config_generation,
+                    instance: self.instance,
                 }),
                 false,
             ),
@@ -643,10 +717,10 @@ impl Engine {
                 Ok(()) => (Response::ok_empty(), true),
                 Err(e) => (Response::err(format!("{e:#}")), false),
             },
-            Command::SetConfig { toml } => match self.set_config(&toml) {
-                Ok(()) => (Response::ok_empty(), true),
-                Err(e) => (Response::err(format!("{e:#}")), false),
-            },
+            Command::SetConfig { toml, expected } => {
+                let (result, retick) = self.set_config(&toml, expected);
+                (Response::ok(ResponseData::SetConfig(result)), retick)
+            }
             // GetStatus/SubscribeStatus are answered by the server threads
             // straight from the hub and never reach this channel.
             Command::GetStatus | Command::SubscribeStatus => (
@@ -764,6 +838,7 @@ impl Engine {
             temps,
             channels: channel_status,
             config_generation: self.config_generation,
+            instance: self.instance,
         })
     }
 
@@ -790,6 +865,29 @@ impl Engine {
                     u.name
                 );
             }
+        }
+    }
+}
+
+/// 64 random bits identifying this daemon process to clients, drawn from
+/// the OS (`/dev/urandom` — collision resistance is what's needed, not
+/// secrecy). Instance identity is correctness-critical: config versions
+/// are compared by (instance, generation), so an unreadable entropy
+/// source fails daemon startup rather than degrading to a weak token.
+/// Zero is reserved for defaulted payloads from before the field existed
+/// and is redrawn (p = 2⁻⁶⁴).
+fn random_instance() -> Result<u64> {
+    use std::io::Read as _;
+    let mut urandom = std::fs::File::open("/dev/urandom")
+        .context("opening /dev/urandom (required for the daemon instance token)")?;
+    loop {
+        let mut bytes = [0u8; 8];
+        urandom
+            .read_exact(&mut bytes)
+            .context("reading /dev/urandom")?;
+        let token = u64::from_ne_bytes(bytes);
+        if token != 0 {
+            return Ok(token);
         }
     }
 }
@@ -1149,11 +1247,20 @@ mod tests {
         assert!(!retick, "get_config must not force a re-tick");
         let resp = reply_rx.try_recv().unwrap();
         assert!(resp.ok);
-        let Some(ResponseData::Config { toml, generation }) = resp.data else {
+        let Some(ResponseData::Config {
+            toml,
+            generation,
+            instance,
+        }) = resp.data
+        else {
             panic!("expected config data, got {resp:?}");
         };
         assert_eq!(toml, TEST_CONFIG);
         assert_eq!(generation, 0, "fresh engine starts at generation 0");
+        assert_eq!(
+            instance, e.instance,
+            "config response must carry the same instance as status frames"
+        );
     }
 
     #[test]
@@ -1170,6 +1277,24 @@ mod tests {
         // A failed reload must not bump: no config change happened.
         assert!(e.reload("not toml").is_err());
         assert_eq!(e.config_generation, 1);
+    }
+
+    /// Reload is the same process — the instance token must not change,
+    /// or clients would refetch and treat the reload as a restart. Two
+    /// separately built engines (= two daemon lifetimes) must differ, so
+    /// their generation counters are never compared with each other.
+    #[test]
+    fn instance_survives_reload_and_differs_between_engines() {
+        let root = fake_sysfs();
+        let mut e = engine(&root);
+        let before = e.instance;
+        let hotter = TEST_CONFIG.replace("[[40, 80], [70, 200]]", "[[40, 90], [70, 210]]");
+        e.reload(&hotter).unwrap();
+        assert_eq!(e.instance, before, "reload must keep the instance token");
+        assert_eq!(e.tick_once().unwrap().instance, before);
+
+        let other = engine(&root);
+        assert_ne!(other.instance, before, "each engine draws its own token");
     }
 
     #[test]
@@ -1622,12 +1747,59 @@ mod tests {
         e.set_config_source(cfg_file.clone());
 
         let hotter = TEST_CONFIG.replace("[[40, 80], [70, 200]]", "[[40, 90], [70, 210]]");
-        e.set_config(&hotter).unwrap();
+        let (result, retick) = e.set_config(&hotter, e.config_version());
+        assert!(retick);
+        assert_eq!(
+            result,
+            SetConfigResult::Applied {
+                toml: hotter.clone(),
+                version: e.config_version(),
+                persistence: Persistence::Persisted,
+            },
+            "applied outcome must carry the exact applied text and version"
+        );
+        assert_eq!(e.config_generation, 1, "one apply, one generation bump");
 
         assert_eq!(fs::read_to_string(&cfg_file).unwrap(), hotter);
         let bak = fs::read_to_string(root.path().join("config.toml.bak")).unwrap();
         assert_eq!(bak, TEST_CONFIG, ".bak holds the previous version");
         assert!(!root.path().join("config.toml.tmp").exists());
+    }
+
+    /// The CAS matrix: a matching expected version applies; a stale
+    /// generation or wrong instance conflicts — and the compare runs
+    /// before parsing, so even garbage TOML with a stale version reports
+    /// Conflict, proving nothing was touched.
+    #[test]
+    fn set_config_conflict_touches_nothing() {
+        let root = fake_sysfs();
+        let mut e = engine(&root);
+        let cfg_file = root.path().join("config.toml");
+        fs::write(&cfg_file, TEST_CONFIG).unwrap();
+        e.set_config_source(cfg_file.clone());
+        let current = e.config_version();
+
+        let stale_generation = ConfigVersion {
+            generation: current.generation + 1,
+            ..current
+        };
+        let wrong_instance = ConfigVersion {
+            instance: current.instance.wrapping_add(1),
+            ..current
+        };
+        for expected in [stale_generation, wrong_instance] {
+            let (result, retick) = e.set_config("garbage, never parsed", expected);
+            assert_eq!(result, SetConfigResult::Conflict { current });
+            assert!(!retick);
+            assert_eq!(e.config_toml, TEST_CONFIG, "memory untouched");
+            assert_eq!(e.config_version(), current, "generation untouched");
+            assert_eq!(
+                fs::read_to_string(&cfg_file).unwrap(),
+                TEST_CONFIG,
+                "disk untouched"
+            );
+            assert!(!root.path().join("config.toml.bak").exists());
+        }
     }
 
     #[test]
@@ -1638,7 +1810,9 @@ mod tests {
         fs::write(&cfg_file, TEST_CONFIG).unwrap();
         e.set_config_source(cfg_file.clone());
 
-        assert!(e.set_config("not toml at all").is_err());
+        let (result, retick) = e.set_config("not toml at all", e.config_version());
+        assert!(matches!(result, SetConfigResult::Rejected { .. }));
+        assert!(!retick);
         assert_eq!(fs::read_to_string(&cfg_file).unwrap(), TEST_CONFIG);
         assert!(!root.path().join("config.toml.bak").exists());
     }
@@ -1653,13 +1827,59 @@ mod tests {
         e.set_config_source(cfg_file.clone());
 
         let hotter = TEST_CONFIG.replace("[[40, 80], [70, 200]]", "[[40, 90], [70, 210]]");
-        e.set_config(&hotter).unwrap();
+        let (result, _) = e.set_config(&hotter, e.config_version());
+        assert!(
+            matches!(
+                result,
+                SetConfigResult::Applied {
+                    persistence: Persistence::DryRun,
+                    ..
+                }
+            ),
+            "dry-run must be visible in the outcome: {result:?}"
+        );
         assert_eq!(e.config_toml, hotter, "applied in memory");
         assert_eq!(
             fs::read_to_string(&cfg_file).unwrap(),
             TEST_CONFIG,
             "file untouched in dry-run"
         );
+    }
+
+    /// A persist failure after a successful apply is a successful mutation
+    /// with a warning — the running config really did change.
+    #[test]
+    fn set_config_persist_failure_reports_applied_but_not_persisted() {
+        let root = fake_sysfs();
+        let mut e = engine(&root);
+        // A config path whose directory does not exist: apply succeeds,
+        // the persist write cannot.
+        e.set_config_source(root.path().join("no-such-dir").join("config.toml"));
+
+        let hotter = TEST_CONFIG.replace("[[40, 80], [70, 200]]", "[[40, 90], [70, 210]]");
+        let (result, retick) = e.set_config(&hotter, e.config_version());
+        assert!(retick, "the running config did change");
+        assert_eq!(e.config_toml, hotter, "applied in memory");
+        match result {
+            SetConfigResult::AppliedButNotPersisted {
+                toml,
+                version,
+                error,
+            } => {
+                assert_eq!(toml, hotter);
+                assert_eq!(version, e.config_version());
+                assert!(error.contains("APPLIED"), "{error}");
+                assert!(error.contains("restart will revert"), "{error}");
+            }
+            other => panic!("expected AppliedButNotPersisted, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn instance_token_is_nonzero() {
+        let root = fake_sysfs();
+        let e = engine(&root);
+        assert_ne!(e.instance, 0, "zero is reserved for defaulted payloads");
     }
 
     #[test]

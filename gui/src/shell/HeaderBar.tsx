@@ -1,4 +1,4 @@
-import { useEffect, useState, type ReactNode } from "react";
+import { useEffect, useRef, useState, type ReactNode, type Ref } from "react";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { CloseIcon, MenuIcon } from "../adw/icons";
 
@@ -18,13 +18,60 @@ export function HeaderBar({
   menuItems: { label: string; onClick: () => void }[];
 }) {
   const [menuOpen, setMenuOpen] = useState(false);
+  const menuButtonRef = useRef<HTMLButtonElement>(null);
+  const menuRef = useRef<HTMLDivElement>(null);
+  // role="menu" is a keyboard contract, not decoration: focus moves into
+  // the menu on open, arrows cycle it (Home/End jump), and every close
+  // path hands focus back to the button — focus lives inside the menu, so
+  // closing without restoring would drop it on <body>.
   useEffect(() => {
     if (!menuOpen) return;
+    const items = () =>
+      Array.from(menuRef.current?.querySelectorAll<HTMLButtonElement>('[role="menuitem"]') ?? []);
+    items()[0]?.focus();
+    const onPointerDown = (e: PointerEvent) => {
+      const t = e.target as Node;
+      if (!menuRef.current?.contains(t) && !menuButtonRef.current?.contains(t)) {
+        setMenuOpen(false);
+        // Focus was inside the menu; park it on the button. A focusable
+        // click target then takes it anyway (its focus happens after
+        // pointerdown), but a non-focusable one no longer drops focus
+        // onto <body>.
+        menuButtonRef.current?.focus();
+      }
+    };
     const onKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape") setMenuOpen(false);
+      if (e.key === "Escape") {
+        setMenuOpen(false);
+        menuButtonRef.current?.focus();
+        return;
+      }
+      if (e.key === "Tab") {
+        // Refocus the button first (no preventDefault): the browser then
+        // tabs onward from it, per the normal tab sequence.
+        setMenuOpen(false);
+        menuButtonRef.current?.focus();
+        return;
+      }
+      const list = items();
+      if (list.length === 0) return;
+      const at = list.indexOf(document.activeElement as HTMLButtonElement);
+      let to = -1;
+      if (e.key === "ArrowDown") to = (at + 1) % list.length;
+      else if (e.key === "ArrowUp") to = at <= 0 ? list.length - 1 : at - 1;
+      else if (e.key === "Home") to = 0;
+      else if (e.key === "End") to = list.length - 1;
+      if (to >= 0) {
+        e.preventDefault();
+        list[to].focus();
+      }
     };
     window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
+    window.addEventListener("pointerdown", onPointerDown);
+    return () => {
+      window.removeEventListener("keydown", onKey);
+      window.removeEventListener("pointerdown", onPointerDown);
+    };
   }, [menuOpen]);
   return (
     <header
@@ -40,6 +87,7 @@ export function HeaderBar({
         <HeaderButton
           label="Primary menu"
           expanded={menuOpen}
+          buttonRef={menuButtonRef}
           onClick={() => setMenuOpen((o) => !o)}
         >
           <MenuIcon />
@@ -49,8 +97,9 @@ export function HeaderBar({
         </HeaderButton>
         {menuOpen && (
           <div
+            ref={menuRef}
             role="menu"
-            onMouseLeave={() => setMenuOpen(false)}
+            aria-label="Primary menu"
             className="absolute right-0 top-10 z-60 min-w-[214px] rounded-popover bg-popover p-[6px] shadow-popover"
           >
             {menuItems.map((item) => (
@@ -58,11 +107,16 @@ export function HeaderBar({
                 key={item.label}
                 type="button"
                 role="menuitem"
+                tabIndex={-1}
                 onClick={() => {
+                  // Refocus the button before acting: the item is about to
+                  // unmount, and a dialog the action opens snapshots the
+                  // focused element to restore on close.
+                  menuButtonRef.current?.focus();
                   setMenuOpen(false);
                   item.onClick();
                 }}
-                className="block w-full cursor-pointer rounded-row px-[10px] py-[7px] text-left text-ink hover:bg-[var(--flat-hover-fill)]"
+                className="block w-full cursor-pointer rounded-row px-[10px] py-[7px] text-left text-ink hover:bg-[var(--flat-hover-fill)] focus-visible:bg-[var(--flat-hover-fill)] focus-visible:outline-none"
               >
                 {item.label}
               </button>
@@ -78,6 +132,7 @@ function HeaderButton({
   label,
   round = false,
   expanded,
+  buttonRef,
   onClick,
   children,
 }: {
@@ -85,11 +140,13 @@ function HeaderButton({
   round?: boolean;
   /** Set when the button controls a popover menu. */
   expanded?: boolean;
+  buttonRef?: Ref<HTMLButtonElement>;
   onClick: () => void;
   children: ReactNode;
 }) {
   return (
     <button
+      ref={buttonRef}
       type="button"
       aria-label={label}
       aria-haspopup={expanded === undefined ? undefined : "menu"}

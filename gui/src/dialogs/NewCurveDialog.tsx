@@ -2,7 +2,7 @@ import { useState } from "react";
 import { Button } from "../adw/Button";
 import { Dialog, DialogHeader } from "../adw/Dialog";
 import { ActionRow, BoxedList, ComboRow, SpinRow, Switch } from "../adw/rows";
-import type { CurveInfo } from "../daemon/types";
+import type { CurveInfo, WriteResult } from "../daemon/types";
 
 const KINDS = [
   { value: "graph", label: "graph — sensor → duty" },
@@ -36,9 +36,9 @@ export function NewCurveDialog({
       name: string,
       sensor: string,
       points: [number, number][],
-    ) => Promise<string | null>;
-    createFlatCurve: (name: string, pwm: number) => Promise<string | null>;
-    createMixCurve: (name: string, fn: string, members: string[]) => Promise<string | null>;
+    ) => Promise<WriteResult>;
+    createFlatCurve: (name: string, pwm: number) => Promise<WriteResult>;
+    createMixCurve: (name: string, fn: string, members: string[]) => Promise<WriteResult>;
     createTriggerCurve: (
       name: string,
       sensor: string,
@@ -47,7 +47,7 @@ export function NewCurveDialog({
       loadTemp: number,
       loadPwm: number,
       responseSeconds: number,
-    ) => Promise<string | null>;
+    ) => Promise<WriteResult>;
   };
   /** message + the created curve's name (to open the editor for graphs). */
   onDone: (message: string, name: string, openEditor: boolean) => void;
@@ -92,9 +92,9 @@ export function NewCurveDialog({
                 duty(loadDuty),
                 response,
               );
-    void run.then((err) => {
-      if (err) setError(err);
-      else onDone(`Curve ${clean} created`, clean, kind === "graph");
+    void run.then(({ error, warning }) => {
+      if (error) setError(error);
+      else onDone(warning ?? `Curve ${clean} created`, clean, kind === "graph");
     });
   };
 
@@ -219,9 +219,9 @@ export function NewCurveDialog({
                 options={sensors}
                 onChange={setSensor}
               />
-              <SpinRow title="Idle below" value={idleTemp} min={0} max={110} unit="°C" onChange={setIdleTemp} />
+              <SpinRow title="Idle below" value={idleTemp} min={0} max={114} unit="°C" onChange={setIdleTemp} />
               <SpinRow title="Idle duty" value={idleDuty} min={0} max={100} unit="%" onChange={setIdleDuty} />
-              <SpinRow title="Load above" value={loadTemp} min={0} max={110} unit="°C" onChange={setLoadTemp} />
+              <SpinRow title="Load above" value={loadTemp} min={0} max={114} unit="°C" onChange={setLoadTemp} />
               <SpinRow title="Load duty" value={loadDuty} min={0} max={100} unit="%" onChange={setLoadDuty} />
               <SpinRow
                 title="Response"

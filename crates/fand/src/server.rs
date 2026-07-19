@@ -85,10 +85,42 @@ fn handle_client(
     commands: &mpsc::Sender<EngineCommand>,
 ) -> Result<()> {
     let mut writer = stream.try_clone().context("cloning stream")?;
-    let reader = BufReader::new(stream);
-    for line in reader.lines() {
-        let line = line?;
+    let mut reader = BufReader::new(stream);
+    loop {
+        let mut line = String::new();
+        if reader.read_line(&mut line)? == 0 {
+            return Ok(()); // clean EOF
+        }
+        // Only newline-terminated requests execute. `read_line` hands back
+        // an EOF-truncated final record without its newline — but a client
+        // whose send died mid-request reports that as a plain failure
+        // ("known not-applied"), so executing the record anyway would make
+        // that report a lie. Discarding it keeps the client's guarantee
+        // true: nothing runs unless the send completed.
+        if !line.ends_with('\n') {
+            return Ok(());
+        }
         if line.trim().is_empty() {
+            continue;
+        }
+        // Check the version *before* deserializing the full command: a
+        // foreign-version request likely has a different command shape
+        // (e.g. v1 SetConfig lacks the mandatory `expected`), and it must
+        // get the clear version diagnostic, not "bad request".
+        #[derive(serde::Deserialize)]
+        struct VersionProbe {
+            version: u32,
+        }
+        let version = serde_json::from_str::<VersionProbe>(&line)
+            .map(|p| p.version)
+            .unwrap_or(PROTOCOL_VERSION);
+        if version != PROTOCOL_VERSION {
+            send(
+                &mut writer,
+                &Response::err(format!(
+                    "unsupported protocol version {version} (daemon speaks {PROTOCOL_VERSION})"
+                )),
+            )?;
             continue;
         }
         let request: Request = match serde_json::from_str(&line) {
@@ -98,16 +130,6 @@ fn handle_client(
                 continue;
             }
         };
-        if request.version != PROTOCOL_VERSION {
-            send(
-                &mut writer,
-                &Response::err(format!(
-                    "unsupported protocol version {} (daemon speaks {PROTOCOL_VERSION})",
-                    request.version
-                )),
-            )?;
-            continue;
-        }
         match request.cmd {
             Command::GetStatus => {
                 let response = match hub.latest() {
@@ -123,7 +145,6 @@ fn handle_client(
             cmd => send(&mut writer, &forward_to_engine(cmd, commands))?,
         }
     }
-    Ok(())
 }
 
 /// Push the current snapshot, then every newer one, until a write fails
@@ -146,6 +167,15 @@ fn subscribe(writer: &mut UnixStream, hub: &StatusHub) -> Result<()> {
 /// Rendezvous with the engine thread: send the command with a fresh reply
 /// channel, then block (bounded) for the outcome.
 fn forward_to_engine(cmd: Command, commands: &mpsc::Sender<EngineCommand>) -> Response {
+    forward_to_engine_within(cmd, commands, ENGINE_REPLY_TIMEOUT)
+}
+
+fn forward_to_engine_within(
+    cmd: Command,
+    commands: &mpsc::Sender<EngineCommand>,
+    timeout: Duration,
+) -> Response {
+    let mutating = may_mutate(&cmd);
     let (reply_tx, reply_rx) = mpsc::channel();
     if commands
         .send(EngineCommand {
@@ -155,12 +185,30 @@ fn forward_to_engine(cmd: Command, commands: &mpsc::Sender<EngineCommand>) -> Re
         .is_err()
     {
         // Receiver dropped — the control loop is gone (shutting down).
+        // The command was never received: known not-applied.
         return Response::err("daemon is shutting down");
     }
-    match reply_rx.recv_timeout(ENGINE_REPLY_TIMEOUT) {
+    match reply_rx.recv_timeout(timeout) {
         Ok(response) => response,
+        // The command is already queued on the engine's channel and may
+        // still be executed after this reply. For a mutation that makes the
+        // outcome genuinely unknown, and the structured code tells clients
+        // to say so; a read has no outcome to be unknown — it just failed.
+        Err(_) if mutating => Response::err_outcome_unknown(
+            "control loop did not respond in time (the command may still apply)",
+        ),
         Err(_) => Response::err("control loop did not respond in time"),
     }
+}
+
+/// Whether a timed-out `cmd` could have changed daemon state. Reads are
+/// listed explicitly so any future command defaults to mutating — the
+/// safe direction is over-warning, never misreporting an applied change.
+fn may_mutate(cmd: &Command) -> bool {
+    !matches!(
+        cmd,
+        Command::GetStatus | Command::SubscribeStatus | Command::GetConfig
+    )
 }
 
 fn send(writer: &mut UnixStream, response: &Response) -> Result<()> {
@@ -203,6 +251,7 @@ mod tests {
                 },
             )]),
             config_generation: 0,
+            instance: 0,
         }
     }
 
@@ -243,7 +292,7 @@ mod tests {
     fn get_status_returns_latest() {
         let (_dir, hub, mut client, _cmd_rx) = server_and_client();
         hub.publish(sample_status(54.5));
-        send_line(&mut client, r#"{"version":1,"cmd":"get_status"}"#);
+        send_line(&mut client, r#"{"version":2,"cmd":"get_status"}"#);
         let resp = read_response(&mut client);
         assert!(resp.ok);
         let Some(ResponseData::Status(status)) = resp.data else {
@@ -256,7 +305,7 @@ mod tests {
     #[test]
     fn get_status_before_first_tick_is_an_error() {
         let (_dir, _hub, mut client, _cmd_rx) = server_and_client();
-        send_line(&mut client, r#"{"version":1,"cmd":"get_status"}"#);
+        send_line(&mut client, r#"{"version":2,"cmd":"get_status"}"#);
         let resp = read_response(&mut client);
         assert!(!resp.ok);
         assert!(resp.error.unwrap().contains("no status yet"));
@@ -269,7 +318,7 @@ mod tests {
         send_line(&mut client, "not json");
         assert!(!read_response(&mut client).ok);
         // Same connection still works afterwards.
-        send_line(&mut client, r#"{"version":1,"cmd":"get_status"}"#);
+        send_line(&mut client, r#"{"version":2,"cmd":"get_status"}"#);
         assert!(read_response(&mut client).ok);
     }
 
@@ -280,6 +329,22 @@ mod tests {
         let resp = read_response(&mut client);
         assert!(!resp.ok);
         assert!(resp.error.unwrap().contains("version 99"));
+    }
+
+    /// A v1 SetConfig doesn't even deserialize as a v2 command (no
+    /// `expected`) — it must still get the version diagnostic, not
+    /// "bad request".
+    #[test]
+    fn v1_set_config_gets_version_diagnostic_not_bad_request() {
+        let (_dir, _hub, mut client, _cmd_rx) = server_and_client();
+        send_line(
+            &mut client,
+            r#"{"version":1,"cmd":"set_config","toml":"[daemon]\n"}"#,
+        );
+        let resp = read_response(&mut client);
+        assert!(!resp.ok);
+        let error = resp.error.unwrap();
+        assert!(error.contains("unsupported protocol version 1"), "{error}");
     }
 
     #[test]
@@ -293,10 +358,11 @@ mod tests {
                 .send(Response::ok(ResponseData::Config {
                     toml: "[daemon]\n".into(),
                     generation: 0,
+                    instance: 0,
                 }))
                 .unwrap();
         });
-        send_line(&mut client, r#"{"version":1,"cmd":"get_config"}"#);
+        send_line(&mut client, r#"{"version":2,"cmd":"get_config"}"#);
         let resp = read_response(&mut client);
         assert!(resp.ok, "{resp:?}");
         let Some(ResponseData::Config { toml, .. }) = resp.data else {
@@ -310,17 +376,105 @@ mod tests {
     fn engine_gone_yields_shutdown_error() {
         let (_dir, _hub, mut client, cmd_rx) = server_and_client();
         drop(cmd_rx);
-        send_line(&mut client, r#"{"version":1,"cmd":"reload_config"}"#);
+        send_line(&mut client, r#"{"version":2,"cmd":"reload_config"}"#);
         let resp = read_response(&mut client);
         assert!(!resp.ok);
         assert!(resp.error.unwrap().contains("shutting down"));
+    }
+
+    /// A complete JSON request that hits EOF without its trailing newline
+    /// must never execute: the client's send died mid-request and will
+    /// report "known not-applied" — executing the record would make that
+    /// a lie. Runs `handle_client` directly and joins it, so "nothing
+    /// reached the engine" is proof by construction, not a timeout race.
+    #[test]
+    fn eof_truncated_request_is_never_executed() {
+        let (mut client, server) = UnixStream::pair().unwrap();
+        let hub = Arc::new(StatusHub::default());
+        let (cmd_tx, cmd_rx) = mpsc::channel();
+        let handler = thread::spawn(move || handle_client(server, &hub, &cmd_tx));
+        client
+            .write_all(br#"{"version":2,"cmd":"reload_config"}"#)
+            .unwrap();
+        // End the stream without ever sending the newline.
+        client.shutdown(std::net::Shutdown::Write).unwrap();
+        handler.join().unwrap().unwrap();
+        // The handler has returned (and dropped its sender): no command
+        // can ever arrive after this point.
+        assert!(
+            cmd_rx.try_recv().is_err(),
+            "truncated request reached the engine"
+        );
+    }
+
+    /// Discarding an unterminated tail is surgical: a complete request
+    /// pipelined before it still executes.
+    #[test]
+    fn pipelined_complete_then_truncated_executes_only_the_complete_one() {
+        let (mut client, server) = UnixStream::pair().unwrap();
+        let hub = Arc::new(StatusHub::default());
+        let (cmd_tx, cmd_rx) = mpsc::channel::<EngineCommand>();
+        let handler = thread::spawn(move || handle_client(server, &hub, &cmd_tx));
+        // Stub engine: reply to everything forwarded, record what arrived.
+        let engine = thread::spawn(move || {
+            let mut seen = Vec::new();
+            while let Ok(EngineCommand { cmd, reply }) = cmd_rx.recv() {
+                reply.send(Response::ok_empty()).unwrap();
+                seen.push(cmd);
+            }
+            seen
+        });
+        client
+            .write_all(
+                b"{\"version\":2,\"cmd\":\"reload_config\"}\n{\"version\":2,\"cmd\":\"reload_config\"}",
+            )
+            .unwrap();
+        client.shutdown(std::net::Shutdown::Write).unwrap();
+        // The complete first request gets its answer...
+        let mut reader = BufReader::new(client);
+        let mut line = String::new();
+        reader.read_line(&mut line).unwrap();
+        let resp: Response = serde_json::from_str(&line).unwrap();
+        assert!(resp.ok, "{resp:?}");
+        handler.join().unwrap().unwrap();
+        // ...and once the handler has returned, only that request has
+        // ever reached the engine.
+        assert_eq!(engine.join().unwrap(), vec![Command::ReloadConfig]);
+    }
+
+    /// A timed-out read has no outcome to be unknown — it must come back
+    /// as a plain error, without the outcome-unknown code that would make
+    /// clients say "may or may not have applied" about a GetConfig.
+    #[test]
+    fn get_config_timeout_is_plain_error_not_outcome_unknown() {
+        let (cmd_tx, cmd_rx) = mpsc::channel::<EngineCommand>();
+        let resp = forward_to_engine_within(Command::GetConfig, &cmd_tx, Duration::from_millis(10));
+        drop(cmd_rx);
+        assert!(!resp.ok);
+        assert_eq!(resp.code, None);
+        assert!(resp.error.unwrap().contains("did not respond"));
+    }
+
+    /// A reply timeout is not a refusal: the queued command may still run,
+    /// and the response must carry the structured outcome-unknown code so
+    /// clients never report it as a plain failure.
+    #[test]
+    fn engine_reply_timeout_is_outcome_unknown() {
+        let (cmd_tx, cmd_rx) = mpsc::channel::<EngineCommand>();
+        // Stub engine that receives the command but never answers.
+        let resp =
+            forward_to_engine_within(Command::ReloadConfig, &cmd_tx, Duration::from_millis(10));
+        drop(cmd_rx);
+        assert!(!resp.ok);
+        assert_eq!(resp.code, Some(fand_proto::ErrorCode::OutcomeUnknown));
+        assert!(resp.error.unwrap().contains("may still apply"));
     }
 
     #[test]
     fn subscribe_pushes_each_publish() {
         let (_dir, hub, mut client, _cmd_rx) = server_and_client();
         hub.publish(sample_status(50.0));
-        send_line(&mut client, r#"{"version":1,"cmd":"subscribe_status"}"#);
+        send_line(&mut client, r#"{"version":2,"cmd":"subscribe_status"}"#);
         // Initial snapshot on subscribe...
         let first = read_response(&mut client);
         let Some(ResponseData::Status(s)) = first.data else {

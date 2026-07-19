@@ -73,6 +73,7 @@ mod tests {
             temps: BTreeMap::from([("cpu".to_string(), cpu)]),
             channels: BTreeMap::new(),
             config_generation: 0,
+            instance: 0,
         }
     }
 

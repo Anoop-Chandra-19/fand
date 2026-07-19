@@ -8,8 +8,8 @@ use std::process::ExitCode;
 use anyhow::{anyhow, bail, Context, Result};
 use clap::{Parser, Subcommand};
 use fand_core::config::CurveConfig;
-use fand_proto::client::Client;
-use fand_proto::{Command, Status, SOCKET_PATH};
+use fand_proto::client::{Client, ClientError};
+use fand_proto::{Command, Persistence, SetConfigResult, Status, SOCKET_PATH};
 
 #[derive(Parser)]
 #[command(
@@ -157,7 +157,7 @@ fn override_cmd(
             ),
         )
     };
-    connect(socket)?.request(cmd)?;
+    connect(socket)?.request_mutating(cmd)?;
     println!("{done_msg}");
     Ok(())
 }
@@ -168,41 +168,222 @@ fn config_show(socket: &Path) -> Result<()> {
 }
 
 fn config_reload(socket: &Path) -> Result<()> {
-    connect(socket)?.request(Command::ReloadConfig)?;
+    connect(socket)?.request_mutating(Command::ReloadConfig)?;
     println!("config reloaded and applied");
     Ok(())
 }
 
 /// $EDITOR round-trip: fetch → edit → validate locally (with a re-edit
-/// loop, so a typo never costs you the whole edit) → send. The daemon
-/// re-validates and only persists after the config applied to hardware.
+/// loop, so a typo never costs you the whole edit) → send with the
+/// fetched version as the CAS `expected`. The editor can hold the
+/// snapshot for minutes; if anything else (the GUI, another fanctl)
+/// changed the config meanwhile, the daemon reports a conflict instead
+/// of silently overwriting that change — and the edit is preserved to a
+/// durable path, never discarded.
 fn config_edit(socket: &Path) -> Result<()> {
-    let original = fetch_config(socket)?;
+    let snap = connect(socket)?.get_config()?;
     let dir = tempfile::tempdir().context("creating temp dir")?;
     let path = dir.path().join("fand-config.toml");
-    std::fs::write(&path, &original).context("writing temp config")?;
+    std::fs::write(&path, &snap.toml).context("writing temp config")?;
 
     loop {
         edit_in_editor(&path)?;
         let edited = std::fs::read_to_string(&path).context("reading edited config")?;
-        if edited == original {
+        if edited == snap.toml {
             println!("no changes — nothing to apply");
             return Ok(());
         }
-        match fand_core::Config::from_toml_str(&edited) {
-            Ok(_) => {
-                connect(socket)?.request(Command::SetConfig { toml: edited })?;
-                println!("config applied and persisted");
+        if let Err(e) = fand_core::Config::from_toml_str(&edited) {
+            eprintln!("invalid config:\n  {e}");
+            if !ask_yes_no("re-edit?")? {
+                bail!("aborted — daemon config unchanged");
+            }
+            continue;
+        }
+        match connect(socket)?.set_config(edited.clone(), snap.version) {
+            Ok(SetConfigResult::Applied { persistence, .. }) => {
+                print_applied(persistence);
                 return Ok(());
             }
-            Err(e) => {
-                eprintln!("invalid config:\n  {e}");
+            Ok(SetConfigResult::AppliedButNotPersisted { error, .. }) => {
+                println!("config applied");
+                eprintln!("warning: {error}");
+                return Ok(());
+            }
+            Ok(SetConfigResult::Conflict { current }) => {
+                let kept = keep_edit(dir, &edited);
+                bail!(
+                    "the daemon's config changed while you were editing (your edit was \
+                     based on {}; the daemon is now at {current}) — nothing was applied.\n\
+                     your edited version is kept at {kept}\n\
+                     re-run `fanctl config edit` to redo the change against the current config",
+                    snap.version,
+                );
+            }
+            Ok(SetConfigResult::Rejected { error }) => {
+                eprintln!("daemon rejected the config:\n  {error}");
                 if !ask_yes_no("re-edit?")? {
                     bail!("aborted — daemon config unchanged");
                 }
             }
+            Err(ClientError::OutcomeUnknown(cause)) => {
+                let kept = keep_edit(dir, &edited);
+                bail!(
+                    "the daemon did not confirm the change ({cause}) — it may or may \
+                     not have applied. check `fanctl config show`; your edited version \
+                     is kept at {kept}"
+                );
+            }
+            Err(e) => {
+                let kept = keep_edit(dir, &edited);
+                return Err(
+                    anyhow!(e).context(format!("sending the edited config (kept at {kept})"))
+                );
+            }
         }
     }
+}
+
+fn print_applied(persistence: Persistence) {
+    match persistence {
+        Persistence::Persisted => println!("config applied and persisted"),
+        Persistence::DryRun => {
+            println!("config applied (dry-run daemon: in memory only, not persisted)")
+        }
+    }
+}
+
+/// Where a not-applied edit survives, as a printable location: preferably
+/// copied (crash-durably) to the state dir; if even that fails, the temp
+/// dir itself is kept (its auto-delete disarmed) — the "never discarded"
+/// guarantee has no failure mode that drops the only copy. No durability
+/// is claimed for the fallback: the platform temp dir may be tmpfs (gone
+/// on reboot) or disk that tmpfiles cleanup can empty without one, so the
+/// message promises nothing and tells the user to move the file.
+fn keep_edit(dir: tempfile::TempDir, edited: &str) -> String {
+    match preserve_edit(edited) {
+        Ok(path) => path.display().to_string(),
+        Err(e) => {
+            let dir = dir.keep();
+            format!(
+                "{} — a TEMP directory not guaranteed to survive cleanup or a reboot, \
+                 copy the file somewhere safe now (saving to the state dir failed: {e:#})",
+                dir.join("fand-config.toml").display()
+            )
+        }
+    }
+}
+
+/// Copy a not-applied edit out of the auto-deleted temp dir so user work
+/// is never lost. Lands in XDG state (`~/.local/state/fanctl/`).
+fn preserve_edit(edited: &str) -> Result<PathBuf> {
+    let base = state_base(
+        std::env::var_os("XDG_STATE_HOME").map(PathBuf::from),
+        std::env::var_os("HOME").map(PathBuf::from),
+    )
+    .context("no absolute XDG_STATE_HOME or HOME — nowhere durable to save the edit")?;
+    let stamp = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    preserve_edit_in(&base.join("fanctl"), stamp, edited)
+}
+
+/// The XDG state base directory, or None when no absolute candidate exists.
+/// The XDG spec declares a relative value in these variables invalid and to
+/// be ignored — honoring that also keeps `preserve_edit_in`'s durability
+/// walk on absolute paths only, where the ancestor chain is well-defined
+/// all the way up. No temp-dir fallback here: a "rescue" copied into
+/// temporary storage would be presented as durable while carrying the same
+/// lifecycle risk the keep-the-tempdir path warns loudly about — better to
+/// fail into that honest fallback than to succeed into a quiet one.
+fn state_base(xdg: Option<PathBuf>, home: Option<PathBuf>) -> Option<PathBuf> {
+    xdg.filter(|p| p.is_absolute()).or_else(|| {
+        home.filter(|p| p.is_absolute())
+            .map(|h| h.join(".local/state"))
+    })
+}
+
+fn preserve_edit_in(dir: &Path, stamp: u64, edited: &str) -> Result<PathBuf> {
+    // Everything below this ancestor is about to be created and needs its
+    // directory entry synced; everything at or above it already existed,
+    // and syncing it would only add failure modes (some filesystems reject
+    // directory fsync) that could reject an already-durable rescue file.
+    let sync_stop = dir
+        .ancestors()
+        .find(|a| a.exists())
+        .unwrap_or_else(|| Path::new("/"));
+    std::fs::create_dir_all(dir).with_context(|| format!("creating {}", dir.display()))?;
+    // create_new + a widening suffix: a second conflict in the same
+    // second must never overwrite the first preserved edit.
+    for attempt in 0u32.. {
+        let name = match attempt {
+            0 => format!("config-edit-{stamp}.toml"),
+            n => format!("config-edit-{stamp}-{n}.toml"),
+        };
+        let path = dir.join(name);
+        match std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&path)
+        {
+            Ok(file) => {
+                return match write_durably(file, &path, dir, sync_stop, edited) {
+                    Ok(()) => Ok(path),
+                    Err(e) => {
+                        // A half-written file must not linger looking like
+                        // a preserved edit. Best-effort — the temp source
+                        // still holds the real copy either way — but if
+                        // cleanup itself fails, the error must say a
+                        // partial file may remain, or the leftover would
+                        // pass for a preserved edit later.
+                        let cleanup = std::fs::remove_file(&path)
+                            .and_then(|()| std::fs::File::open(dir).and_then(|d| d.sync_all()));
+                        Err(match cleanup {
+                            Ok(()) => e,
+                            Err(c) => e.context(format!(
+                                "a partial copy may remain at {} (cleanup failed: {c})",
+                                path.display()
+                            )),
+                        })
+                    }
+                };
+            }
+            Err(e) if e.kind() == ErrorKind::AlreadyExists => continue,
+            Err(e) => {
+                return Err(e).with_context(|| format!("creating {}", path.display()));
+            }
+        }
+    }
+    unreachable!("create_new loop always returns")
+}
+
+/// The temp source is deleted the moment the caller returns Ok, so the copy
+/// must actually be on disk first: sync the file's bytes, then the directory
+/// entries — the filename is an entry in `dir`, and each directory
+/// `create_dir_all` just made is itself an entry in *its* parent. The walk
+/// stops at `sync_stop`, the deepest directory that predates this call.
+fn write_durably(
+    mut file: std::fs::File,
+    path: &Path,
+    dir: &Path,
+    sync_stop: &Path,
+    edited: &str,
+) -> Result<()> {
+    use std::io::Write as _;
+    file.write_all(edited.as_bytes())
+        .with_context(|| format!("writing {}", path.display()))?;
+    file.sync_all()
+        .with_context(|| format!("syncing {}", path.display()))?;
+    for ancestor in dir.ancestors() {
+        std::fs::File::open(ancestor)
+            .and_then(|d| d.sync_all())
+            .with_context(|| format!("syncing {}", ancestor.display()))?;
+        if ancestor == sync_stop {
+            break;
+        }
+    }
+    Ok(())
 }
 
 fn edit_in_editor(path: &Path) -> Result<()> {
@@ -300,15 +481,19 @@ fn curve_set(socket: &Path, name: &str, point_args: &[String], sensor: Option<&s
         .iter()
         .map(|s| parse_point(s))
         .collect::<Result<Vec<_>>>()?;
-    let current = fetch_config(socket)?;
-    let is_new = !fand_core::Config::from_toml_str(&current)
+    // One connection for the whole read-modify-write: the fetched version
+    // is the CAS `expected`, so a concurrent change (GUI, another fanctl)
+    // conflicts instead of being silently overwritten.
+    let mut client = connect(socket)?;
+    let snap = client.get_config()?;
+    let is_new = !fand_core::Config::from_toml_str(&snap.toml)
         .map_err(|e| anyhow!("daemon sent a config that does not validate: {e}"))?
         .curves
         .contains_key(name);
     let updated = match (is_new, sensor) {
-        (false, _) => fand_core::replace_curve_points(&current, name, &points)
+        (false, _) => fand_core::replace_curve_points(&snap.toml, name, &points)
             .context("editing curve points")?,
-        (true, Some(sensor)) => fand_core::create_graph_curve(&current, name, sensor, &points)
+        (true, Some(sensor)) => fand_core::create_graph_curve(&snap.toml, name, sensor, &points)
             .context("creating curve")?,
         (true, None) => bail!(
             "curve `{name}` does not exist — pass --sensor <name> to create it \
@@ -318,15 +503,31 @@ fn curve_set(socket: &Path, name: &str, point_args: &[String], sensor: Option<&s
     // Instant local feedback; the daemon re-validates anyway.
     fand_core::Config::from_toml_str(&updated)
         .map_err(|e| anyhow!("resulting config would be invalid: {e}"))?;
-    connect(socket)?.request(Command::SetConfig { toml: updated })?;
-    if is_new {
-        eprintln!("note: created curve `{name}` (bind it to a channel to take effect)");
+    match client.set_config(updated, snap.version) {
+        Ok(SetConfigResult::Applied { persistence, .. }) => {
+            if is_new {
+                eprintln!("note: created curve `{name}` (bind it to a channel to take effect)");
+            }
+            println!("curve `{name}` set to {} point(s)", points.len());
+            print_applied(persistence);
+            Ok(())
+        }
+        Ok(SetConfigResult::AppliedButNotPersisted { error, .. }) => {
+            println!("curve `{name}` set to {} point(s), applied", points.len());
+            eprintln!("warning: {error}");
+            Ok(())
+        }
+        Ok(SetConfigResult::Conflict { current }) => bail!(
+            "the daemon's config changed while this command ran (now at {current}) — \
+             nothing was changed; re-run"
+        ),
+        Ok(SetConfigResult::Rejected { error }) => bail!("daemon rejected the config: {error}"),
+        Err(ClientError::OutcomeUnknown(cause)) => bail!(
+            "the daemon did not confirm the change ({cause}) — it may or may not \
+             have applied; check `fanctl curve show {name}`"
+        ),
+        Err(e) => Err(e.into()),
     }
-    println!(
-        "curve `{name}` set to {} point(s), applied and persisted",
-        points.len()
-    );
-    Ok(())
 }
 
 /// `40:80` or `40:31%` → (temp °C, raw pwm).
@@ -341,8 +542,7 @@ fn parse_point(s: &str) -> Result<(i32, u8)> {
 }
 
 fn fetch_config(socket: &Path) -> Result<String> {
-    let (toml, _generation) = connect(socket)?.get_config()?;
-    Ok(toml)
+    Ok(connect(socket)?.get_config()?.toml)
 }
 
 /// Accept a raw PWM (`140`) or a duty percentage (`55%`) — the wire always
@@ -417,7 +617,65 @@ fn duty_percent(pwm: u8) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{duty_percent, parse_point, parse_pwm};
+    use super::{duty_percent, parse_point, parse_pwm, preserve_edit_in, state_base};
+    use std::path::PathBuf;
+
+    /// The XDG spec says a relative XDG_STATE_HOME is invalid and must be
+    /// ignored — fall through to ~/.local/state, not a half-supported
+    /// relative path whose durability walk can't reach the cwd entry.
+    #[test]
+    fn state_base_ignores_relative_xdg_state_home() {
+        assert_eq!(
+            state_base(
+                Some(PathBuf::from("relative/state")),
+                Some(PathBuf::from("/home/x"))
+            ),
+            Some(PathBuf::from("/home/x/.local/state"))
+        );
+        assert_eq!(
+            state_base(
+                Some(PathBuf::from("/abs/state")),
+                Some(PathBuf::from("/home/x"))
+            ),
+            Some(PathBuf::from("/abs/state"))
+        );
+        assert_eq!(
+            state_base(None, Some(PathBuf::from("/home/x"))),
+            Some(PathBuf::from("/home/x/.local/state"))
+        );
+        // No absolute candidate at all: None, so preservation fails into
+        // the keep-the-tempdir fallback and its honest warning — never a
+        // quiet copy into more temporary storage presented as durable.
+        assert_eq!(state_base(None, None), None);
+    }
+
+    /// A conflicted edit must land, byte-for-byte, at the path we tell
+    /// the user about — their work is never discarded.
+    #[test]
+    fn preserve_edit_writes_content_to_reported_path() {
+        let dir = tempfile::tempdir().unwrap();
+        let base = dir.path().join("state").join("fanctl");
+        let path = preserve_edit_in(&base, 1_752_800_000, "[daemon]\ntick_seconds = 2\n").unwrap();
+        assert_eq!(path, base.join("config-edit-1752800000.toml"));
+        assert_eq!(
+            std::fs::read_to_string(&path).unwrap(),
+            "[daemon]\ntick_seconds = 2\n"
+        );
+    }
+
+    /// Two conflicts in the same second must preserve both edits — the
+    /// second gets a suffixed name instead of overwriting the first.
+    #[test]
+    fn preserve_edit_never_overwrites_an_earlier_preserved_edit() {
+        let dir = tempfile::tempdir().unwrap();
+        let base = dir.path().join("fanctl");
+        let first = preserve_edit_in(&base, 42, "first edit\n").unwrap();
+        let second = preserve_edit_in(&base, 42, "second edit\n").unwrap();
+        assert_ne!(first, second);
+        assert_eq!(second, base.join("config-edit-42-1.toml"));
+        assert_eq!(std::fs::read_to_string(&first).unwrap(), "first edit\n");
+        assert_eq!(std::fs::read_to_string(&second).unwrap(), "second edit\n");
+    }
 
     #[test]
     fn duty_percent_endpoints_and_rounding() {
