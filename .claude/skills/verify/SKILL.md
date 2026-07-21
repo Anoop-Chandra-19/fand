@@ -8,6 +8,18 @@ description: Build, launch and observe fand's daemon/CLI/GUI without touching re
 The live systemd service owns the real fans — never run a repo build
 against hardware. Everything below is unprivileged and read-only.
 
+## One-command GUI sessions
+
+- `make dev` — GUI + repo-built `fand --dry-run` on a temp socket (real
+  sensors, no writes). Ctrl-C tears everything down.
+- `make dev-mock` — GUI + `crates/fand/examples/mockd.rs`, a fake daemon
+  speaking full protocol v2 with synthetic temps run through the real
+  fand-core curve trees. `SCENARIO=heat-ramp` sweeps 35→92 °C (full curve
+  range), `SCENARIO=flappy` drops clients every 20 s (disconnect UI),
+  `SCENARIO=restart` also comes back as a new instance (generation reset).
+- Mock alone for CLI work:
+  `cargo run -p fand --example mockd -- --socket /tmp/mockd.sock`
+
 ## Daemon + CLI surface
 
 ```fish

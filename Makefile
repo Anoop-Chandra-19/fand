@@ -1,7 +1,10 @@
-.PHONY: help fmt check test clippy ci core-test mix-test proto-test daemon-test cli-test
+.PHONY: help fmt check test clippy ci core-test mix-test proto-test daemon-test cli-test dev dev-mock
 
 help:
 	@echo "Available targets:"
+	@echo "  make dev          - GUI + repo-built fand --dry-run (real sensors, no hardware writes)"
+	@echo "  make dev-mock     - GUI + mock daemon with synthetic data"
+	@echo "                      (SCENARIO=normal|heat-ramp|flappy|restart)"
 	@echo "  make fmt          - Format all Rust code"
 	@echo "  make check        - Check the whole workspace"
 	@echo "  make test         - Test the whole workspace"
@@ -41,3 +44,9 @@ daemon-test:
 
 cli-test:
 	cargo test -p fanctl
+
+dev:
+	scripts/dev.sh real
+
+dev-mock:
+	SCENARIO=$(SCENARIO) scripts/dev.sh mock
