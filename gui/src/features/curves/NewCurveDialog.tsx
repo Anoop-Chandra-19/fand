@@ -1,8 +1,9 @@
 import { useState } from "react";
-import { Button } from "../adw/Button";
-import { Dialog, DialogHeader } from "../adw/Dialog";
-import { ActionRow, BoxedList, ComboRow, SpinRow, Switch } from "../adw/rows";
-import type { CurveInfo, WriteResult } from "../daemon/types";
+import { Button } from "../../adw/Button";
+import { Dialog, DialogHeader } from "../../adw/Dialog";
+import { ActionRow, BoxedList, ComboRow, SpinRow, Switch } from "../../adw/rows";
+import type { CurveInfo } from "../../api/daemonTypes";
+import type { WriteResult } from "../../api/invokeWrite";
 
 const KINDS = [
   { value: "graph", label: "graph — sensor → duty" },

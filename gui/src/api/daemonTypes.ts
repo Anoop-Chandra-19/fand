@@ -27,9 +27,7 @@ export interface Sample {
   status: Status;
 }
 
-export function dutyPercent(pwm: number): number {
-  return Math.round((pwm * 100) / 255);
-}
+
 
 // Mirrors gui/src-tauri/src/state.rs's payload types. The backend owns
 // the only config copy and pushes it with events; nothing on this side
@@ -84,14 +82,7 @@ export interface ConfigPayload {
   tick_seconds: number;
 }
 
-/** How a write command landed. At most one of the fields is set: `error`
- * means it failed (or its outcome is unknown — the message says so);
- * `warning` means it succeeded with a caveat the user must see. Both
- * null is a clean success. */
-export interface WriteResult {
-  error: string | null;
-  warning: string | null;
-}
+
 
 /** One status frame plus the newest same-instance config that covers it.
  * Usually exactly the config the frame was computed under; right after

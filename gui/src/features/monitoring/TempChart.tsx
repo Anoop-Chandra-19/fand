@@ -1,4 +1,4 @@
-import type { Sample } from "../daemon/types";
+import type { Sample } from "../../api/daemonTypes";
 
 export const SERIES = [
   "var(--color-series-1)",

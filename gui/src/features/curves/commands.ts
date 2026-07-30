@@ -1,5 +1,5 @@
-import { invoke } from "@tauri-apps/api/core";
-import type { CurvePoint, WriteResult } from "../daemon/types";
+import type { CurvePoint } from "../../api/daemonTypes";
+import { invokeWrite } from "../../api/invokeWrite";
 
 /**
  * The curve write commands. Fire-and-report: each resolves to a
@@ -9,26 +9,18 @@ import type { CurvePoint, WriteResult } from "../daemon/types";
  * toast) — and never throws. The applied config itself comes back
  * through the backend's "config" event; no caller holds config state.
  */
-async function runWrite(command: string, args: Record<string, unknown>): Promise<WriteResult> {
-  try {
-    const warning = await invoke<string | null>(command, args);
-    return { error: null, warning: warning ?? null };
-  } catch (e) {
-    return { error: String(e), warning: null };
-  }
-}
-
-export const curveWrites = {
+export const curveCommands = {
   /** Replaces an existing graph curve's points. */
   setCurvePoints: (name: string, points: CurvePoint[]) =>
-    runWrite("set_curve_points", { name, points }),
+    invokeWrite("set_curve_points", { name, points }),
 
   /** Creates a new graph curve bound to `sensor`. */
   createGraphCurve: (name: string, sensor: string, points: CurvePoint[]) =>
-    runWrite("create_graph_curve", { name, sensor, points }),
+    invokeWrite("create_graph_curve", { name, sensor, points }),
 
   /** Rebinds which sensor drives a graph curve. */
-  setGraphSensor: (name: string, sensor: string) => runWrite("set_graph_sensor", { name, sensor }),
+  setGraphSensor: (name: string, sensor: string) =>
+    invokeWrite("set_graph_sensor", { name, sensor }),
 
   /** Applies a full graph-curve edit as one batch (one SetConfig). */
   applyGraphCurve: (
@@ -39,7 +31,7 @@ export const curveWrites = {
     hysteresisDown: number,
     responseSeconds: number,
   ) =>
-    runWrite("apply_graph_curve", {
+    invokeWrite("apply_graph_curve", {
       name,
       sensor,
       points,
@@ -49,17 +41,19 @@ export const curveWrites = {
     }),
 
   /** Creates a new flat curve holding a constant pwm. */
-  createFlatCurve: (name: string, pwm: number) => runWrite("create_flat_curve", { name, pwm }),
+  createFlatCurve: (name: string, pwm: number) =>
+    invokeWrite("create_flat_curve", { name, pwm }),
 
   /** Changes an existing flat curve's constant pwm. */
-  setFlatPwm: (name: string, pwm: number) => runWrite("set_flat_pwm", { name, pwm }),
+  setFlatPwm: (name: string, pwm: number) => invokeWrite("set_flat_pwm", { name, pwm }),
 
   /** Creates a new mix curve combining `members` with `function`. */
   createMixCurve: (name: string, fn: string, members: string[]) =>
-    runWrite("create_mix_curve", { name, function: fn, members }),
+    invokeWrite("create_mix_curve", { name, function: fn, members }),
 
   /** Changes an existing mix curve's combining function. */
-  setMixFunction: (name: string, fn: string) => runWrite("set_mix_function", { name, function: fn }),
+  setMixFunction: (name: string, fn: string) =>
+    invokeWrite("set_mix_function", { name, function: fn }),
 
   /** Creates a new trigger curve (the daemon enforces the pwm1 ban). */
   createTriggerCurve: (
@@ -71,7 +65,7 @@ export const curveWrites = {
     loadPwm: number,
     responseSeconds: number,
   ) =>
-    runWrite("create_trigger_curve", {
+    invokeWrite("create_trigger_curve", {
       name,
       sensor,
       idleTemp,
@@ -91,7 +85,7 @@ export const curveWrites = {
     loadPwm: number,
     responseSeconds: number,
   ) =>
-    runWrite("apply_trigger_curve", {
+    invokeWrite("apply_trigger_curve", {
       name,
       sensor,
       idleTemp,
@@ -101,14 +95,11 @@ export const curveWrites = {
       responseSeconds,
     }),
 
-  addMixMember: (name: string, member: string) => runWrite("add_mix_member", { name, member }),
+  addMixMember: (name: string, member: string) =>
+    invokeWrite("add_mix_member", { name, member }),
 
   removeMixMember: (name: string, member: string) =>
-    runWrite("remove_mix_member", { name, member }),
+    invokeWrite("remove_mix_member", { name, member }),
 
-  /** Rebinds which curve drives a channel. */
-  setChannelCurve: (channel: string, curve: string) =>
-    runWrite("set_channel_curve", { channel, curve }),
-
-  deleteCurve: (name: string) => runWrite("delete_curve", { name }),
+  deleteCurve: (name: string) => invokeWrite("delete_curve", { name }),
 };

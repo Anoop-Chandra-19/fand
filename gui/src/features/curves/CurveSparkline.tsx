@@ -1,7 +1,7 @@
 import { useId } from "react";
-import type { CurvePoint } from "../daemon/types";
-import { interpolate } from "../daemon/eval";
-import { dutyPercent } from "../daemon/types";
+import type { CurvePoint } from "../../api/daemonTypes";
+import { dutyPercent } from "../pwm";
+import { interpolate } from "./model";
 
 /**
  * Fan-curve preview: accent polyline + soft area fill, clamped flat to

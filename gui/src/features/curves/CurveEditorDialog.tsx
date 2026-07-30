@@ -1,10 +1,11 @@
 import { useRef, useState, type PointerEvent as ReactPointerEvent } from "react";
-import { Button } from "../adw/Button";
-import { CloseButton, Dialog, DialogHeader } from "../adw/Dialog";
-import { PlusIcon, TrashIcon } from "../adw/icons";
-import { ActionRow, BoxedList, ComboRow, SpinRow, Switch } from "../adw/rows";
-import type { CurveInfo, CurvePoint, WriteResult } from "../daemon/types";
-import { dutyPercent } from "../daemon/types";
+import { Button } from "../../adw/Button";
+import { CloseButton, Dialog, DialogHeader } from "../../adw/Dialog";
+import { PlusIcon, TrashIcon } from "../../adw/icons";
+import { ActionRow, BoxedList, ComboRow, SpinRow, Switch } from "../../adw/rows";
+import type { CurveInfo, CurvePoint } from "../../api/daemonTypes";
+import type { WriteResult } from "../../api/invokeWrite";
+import { dutyPercent } from "../pwm";
 
 /** Writes shared by every editor variant; each resolves to a WriteResult. */
 export interface CurveWrites {

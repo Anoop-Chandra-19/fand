@@ -37,16 +37,30 @@ daemon-side `cargo test/clippy --workspace` stay fast.
 
 ## Frontend layout
 
-`src/` is organized by feature, one folder per concern:
+`src/` is organized by ownership rather than by UI shape. A feature owns
+its cards, dialogs, commands, and pure model logic together:
 
-- `daemon/` — the TypeScript mirror of the backend's payload types and
-  the one event hook (`useDaemonStatus`) every piece of daemon state
-  flows through.
-- `dashboard/` — the live view (temp chart, channel and curve cards).
-- `curves/`, `settings/` — thin write-command wrappers (`writes.ts`);
-  fire-and-report, no state.
-- `dialogs/` — the curve editors, channel properties, new-curve,
-  preferences and about dialogs.
-- `adw/` — the hand-rolled libadwaita-style component library.
-- `shell/` — CSD headerbar, accent handling, persisted prefs.
-- App shell (`main.tsx`, `App.tsx`, `index.css`) stays at the root.
+- `app/` — composition and lifecycle: the window shell, dashboard layout,
+  app-level dialogs, and local preferences. `App.tsx` owns daemon lifecycle,
+  transient UI state, and dialog orchestration; `Dashboard.tsx` renders the
+  main view.
+- `features/curves/` — curve cards, previews, editors, write commands, and
+  client-side curve evaluation.
+- `features/fans/` — channel cards, channel properties, and channel commands.
+- `features/monitoring/` — live telemetry visualizations.
+- `features/pwm.ts` — pure PWM display conversion shared by fan and curve UI.
+- `api/` — Tauri/daemon contracts, event hooks, command adapters, and shared
+  write-result normalization. It contains no visual components.
+- `adw/` — reusable hand-rolled libadwaita-style primitives. It contains no
+  fand domain behavior.
+
+Dependencies flow from `app` to `features`, `api`, and `adw`; features may
+use `api` and `adw`. Cross-feature imports should be one-way and reflect a
+real domain dependency (for example, a fan channel may render a curve
+preview). Generic domain helpers belong at the `features/` root rather than
+inside one feature.
+
+A substantial new capability gets a sibling feature folder only when work
+on it starts. For example, GPU clock tuning would live in
+`features/gpu-tuning/` with its view, cards/dialogs, commands, and model
+colocated; any new Tauri contracts belong in `api/`.

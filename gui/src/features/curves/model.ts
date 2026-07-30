@@ -1,4 +1,19 @@
-import type { CurveInfo, CurvePoint } from "./types";
+import type { CurveInfo, CurvePoint } from "../../api/daemonTypes";
+
+export function usedByOf(
+  curves: Record<string, CurveInfo>,
+  channels: Record<string, string>,
+  name: string,
+): string[] {
+  const used: string[] = [];
+  for (const [channel, curve] of Object.entries(channels)) {
+    if (curve === name) used.push(channel);
+  }
+  for (const [curveName, curve] of Object.entries(curves)) {
+    if (curve.kind === "mix" && curve.members.includes(name)) used.push(curveName);
+  }
+  return used;
+}
 
 /** Linear interpolation of a graph curve at temp `t` (endpoint hold). */
 export function interpolate(points: CurvePoint[], t: number): number {

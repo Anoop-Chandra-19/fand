@@ -1,8 +1,9 @@
 import { useState } from "react";
-import { CloseButton, Dialog } from "../adw/Dialog";
-import { BoxedList, ComboRow, SpinRow } from "../adw/rows";
-import type { ChannelSettings, WriteResult } from "../daemon/types";
-import { dutyPercent } from "../daemon/types";
+import { CloseButton, Dialog } from "../../adw/Dialog";
+import { BoxedList, ComboRow, SpinRow } from "../../adw/rows";
+import type { ChannelSettings } from "../../api/daemonTypes";
+import type { WriteResult } from "../../api/invokeWrite";
+import { dutyPercent } from "../pwm";
 
 /**
  * Channel properties — boxed-list rows with instant apply through the

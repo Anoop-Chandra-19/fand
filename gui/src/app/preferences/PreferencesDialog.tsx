@@ -1,8 +1,8 @@
 import { useState, type ReactNode } from "react";
-import { CloseButton, Dialog } from "../adw/Dialog";
-import { ActionRow, BoxedList, ComboRow, SpinRow } from "../adw/rows";
-import { dutyPercent } from "../daemon/types";
-import { ACCENTS, type Accent } from "../shell/accent";
+import { CloseButton, Dialog } from "../../adw/Dialog";
+import { ActionRow, BoxedList, ComboRow, SpinRow } from "../../adw/rows";
+import { dutyPercent } from "../../features/pwm";
+import { ACCENTS, type Accent } from "./accent";
 
 function PrefGroup({
   title,

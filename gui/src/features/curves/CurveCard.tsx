@@ -1,9 +1,9 @@
-import { Badge } from "../adw/Badge";
-import { Card } from "../adw/Card";
-import { PlusIcon } from "../adw/icons";
-import type { CurveInfo } from "../daemon/types";
-import { dutyPercent } from "../daemon/types";
-import { evalCurve } from "../daemon/eval";
+import { Badge } from "../../adw/Badge";
+import { Card } from "../../adw/Card";
+import { PlusIcon } from "../../adw/icons";
+import type { CurveInfo } from "../../api/daemonTypes";
+import { dutyPercent } from "../pwm";
+import { evalCurve } from "./model";
 import { CurveSparkline } from "./CurveSparkline";
 
 function DutyNow({

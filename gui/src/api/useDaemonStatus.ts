@@ -1,6 +1,6 @@
 import { listen } from "@tauri-apps/api/event";
 import { useEffect, useState } from "react";
-import type { ConfigPayload, Sample, Status, StatusEvent } from "./types";
+import type { ConfigPayload, Sample, Status, StatusEvent } from "./daemonTypes";
 
 /**
  * Live view of the daemon — the frontend's only data source. The backend

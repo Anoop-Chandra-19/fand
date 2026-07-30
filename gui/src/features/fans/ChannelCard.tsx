@@ -1,10 +1,10 @@
-import { Badge } from "../adw/Badge";
-import { Card } from "../adw/Card";
-import { MoreIcon } from "../adw/icons";
-import { Select } from "../adw/rows";
-import type { ChannelStatus, CurveInfo } from "../daemon/types";
-import { dutyPercent } from "../daemon/types";
-import { CurveSparkline } from "./CurveSparkline";
+import { Badge } from "../../adw/Badge";
+import { Card } from "../../adw/Card";
+import { MoreIcon } from "../../adw/icons";
+import { Select } from "../../adw/rows";
+import type { ChannelStatus, CurveInfo } from "../../api/daemonTypes";
+import { CurveSparkline } from "../curves/CurveSparkline";
+import { dutyPercent } from "../pwm";
 
 /** A labelled readout: dim caption over a mono tabular value. */
 export function Metric({ label, value }: { label: string; value: string }) {
