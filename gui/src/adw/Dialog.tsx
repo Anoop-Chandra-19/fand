@@ -1,4 +1,5 @@
 import { useEffect, useRef, type KeyboardEvent as ReactKeyboardEvent, type ReactNode } from "react";
+import { CloseIcon } from "./icons";
 
 /**
  * AdwDialog — a floating sheet: dimmed backdrop, 15px radius, deeper
@@ -75,16 +76,16 @@ export function Dialog({
   );
 }
 
-/** The 34px round × button used by close-only dialog headers. */
+/** The 34px circular close button used by close-only dialog headers. */
 export function CloseButton({ onClose }: { onClose: () => void }) {
   return (
     <button
       type="button"
       onClick={onClose}
       aria-label="Close"
-      className="flex h-[34px] w-[34px] shrink-0 cursor-pointer items-center justify-center rounded-full bg-white/9 text-[16px] text-ink"
+      className="flex h-8.5 w-8.5 shrink-0 cursor-pointer items-center justify-center rounded-full bg-white/9 text-ink transition-colors duration-200 hover:bg-white/13 active:bg-white/18"
     >
-      ×
+      <CloseIcon />
     </button>
   );
 }
@@ -104,7 +105,7 @@ export function DialogHeader({
   mono?: boolean;
 }) {
   return (
-    <div className="flex shrink-0 items-center justify-between gap-2 border-b border-separator px-3 py-[10px]">
+    <div className="flex shrink-0 items-center justify-between gap-2 border-b border-separator px-3 py-2.5">
       {left}
       <div className="text-center leading-[1.1]">
         <div className={`font-bold ${mono ? "font-mono" : ""}`}>{title}</div>

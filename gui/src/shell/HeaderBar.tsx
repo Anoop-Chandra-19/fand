@@ -83,17 +83,17 @@ export function HeaderBar({
         <span className="text-[1rem] font-bold leading-[1.1]">{title}</span>
         {subtitle && <span className="text-[0.82rem] leading-[1.1] text-dim">{subtitle}</span>}
       </div>
-      <div className="relative z-1 flex items-center gap-1">
+      <div className="relative z-1 flex items-center gap-2.5">
         <HeaderButton
           label="Primary menu"
           expanded={menuOpen}
           buttonRef={menuButtonRef}
           onClick={() => setMenuOpen((o) => !o)}
         >
-          <MenuIcon />
+          <MenuIcon size={18} />
         </HeaderButton>
         <HeaderButton label="Close" round onClick={() => void getCurrentWindow().close()}>
-          <CloseIcon />
+          <CloseIcon size={14} />
         </HeaderButton>
         {menuOpen && (
           <div
@@ -152,8 +152,10 @@ function HeaderButton({
       aria-haspopup={expanded === undefined ? undefined : "menu"}
       aria-expanded={expanded}
       onClick={onClick}
-      className={`flex h-8.5 w-8.5 cursor-pointer items-center justify-center text-ink transition-colors duration-200 ${
-        round ? "rounded-full bg-white/9 hover:bg-white/13" : "rounded-button hover:bg-(--flat-hover-fill)"
+      className={`flex cursor-pointer items-center justify-center text-ink transition-colors duration-200 ${
+        round
+          ? "h-6 w-6 rounded-full bg-white/9 hover:bg-white/13 active:bg-white/18"
+          : "h-8.5 w-8.5 rounded-button hover:bg-(--flat-hover-fill) active:bg-(--flat-active-fill)"
       }`}
     >
       {children}

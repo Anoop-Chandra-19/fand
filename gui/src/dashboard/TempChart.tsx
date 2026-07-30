@@ -25,14 +25,14 @@ export function TempChartCard({
   temps: Record<string, number>;
 }) {
   return (
-    <div className="rounded-card bg-card px-4 pb-2 pt-[14px] shadow-card">
+    <div className="rounded-card bg-card px-4 pb-2 pt-3.5 shadow-card">
       <Chart history={history} sensors={sensors} />
-      <div className="mt-[6px] border-t border-separator pt-2">
-        <div className="flex flex-wrap gap-6 px-[2px] pb-[2px] pt-1">
+      <div className="mt-1.5 border-t border-separator pt-2">
+        <div className="flex flex-wrap gap-6 px-0.5 pb-0.5 pt-1">
           {sensors.map((s, si) => (
-            <div key={s} className="flex min-w-0 flex-[1_1_260px] items-center gap-[9px]">
+            <div key={s} className="flex min-w-0 flex-[1_1_260px] items-center gap-2.25">
               <span
-                className="h-[9px] w-[9px] shrink-0 rounded-[3px]"
+                className="h-2.25 w-2.25 shrink-0 rounded-[3px]"
                 style={{ background: SERIES[si % SERIES.length] }}
               />
               <div className="overflow-hidden text-ellipsis whitespace-nowrap text-[0.82rem] text-dim">

@@ -1,6 +1,6 @@
 import { Badge } from "../adw/Badge";
 import { Card } from "../adw/Card";
-import { MenuIcon } from "../adw/icons";
+import { MoreIcon } from "../adw/icons";
 import { Select } from "../adw/rows";
 import type { ChannelStatus, CurveInfo } from "../daemon/types";
 import { dutyPercent } from "../daemon/types";
@@ -66,7 +66,7 @@ export function ChannelCard({
   const curve = boundCurve ? curves[boundCurve] : undefined;
   const sparkColor = overriding ? "var(--color-warning)" : "var(--color-accent)";
   return (
-    <Card className="flex flex-col gap-[13px]">
+    <Card className="flex flex-col gap-3.25">
       <header className="flex items-start justify-between gap-2">
         <div className="min-w-0">
           <h3 className="numeric m-0 text-[1.18rem] font-bold">{name}</h3>
@@ -86,35 +86,35 @@ export function ChannelCard({
             type="button"
             onClick={onProps}
             aria-label="Channel properties"
-            className="flex h-7 w-7 cursor-pointer items-center justify-center rounded-button text-dim hover:bg-[var(--flat-hover-fill)] hover:text-ink"
+            className="flex h-7 w-7 cursor-pointer items-center justify-center rounded-button text-dim hover:bg-(--flat-hover-fill) hover:text-ink"
           >
-            <MenuIcon />
+            <MoreIcon />
           </button>
         </div>
       </header>
 
       <div className="flex items-end justify-between gap-3">
-        <div className="flex items-baseline gap-[6px]">
+        <div className="flex items-baseline gap-1.5">
           <span className="numeric text-[46px] font-light leading-[0.9]">
             {dutyPercent(channel.current_pwm)}
           </span>
           <span className="text-[1.18rem] font-light text-dim">%</span>
-          <span className="ml-[2px] text-[0.82rem] text-dim">
+          <span className="ml-0.5 text-[0.82rem] text-dim">
             duty · pwm {channel.current_pwm}
           </span>
         </div>
-        <div className="flex gap-[22px]">
+        <div className="flex gap-5.5">
           <Metric label="Fan speed" value={`${channel.rpm.toLocaleString()} RPM`} />
           <Metric label="Target" value={`${dutyPercent(channel.target_pwm)} %`} />
         </div>
       </div>
 
-      <div className="-mx-[2px]" aria-hidden="true">
+      <div className="-mx-0.5" aria-hidden="true">
         <SparkPwm history={pwmHistory} color={sparkColor} />
       </div>
 
-      <div className="flex items-center gap-[10px] border-t border-separator pt-3">
-        <span className="w-[34px] shrink-0 text-[0.82rem] text-dim">curve</span>
+      <div className="flex items-center gap-2.5 border-t border-separator pt-3">
+        <span className="w-8.5 shrink-0 text-[0.82rem] text-dim">curve</span>
         <Select
           value={boundCurve ?? ""}
           options={curveNames}
@@ -124,7 +124,7 @@ export function ChannelCard({
           className="flex-1"
         />
         {curve?.kind === "graph" && (
-          <div className="max-w-[118px] flex-1">
+          <div className="max-w-29.5 flex-1">
             <CurveSparkline points={curve.points} liveTemp={temps[curve.sensor]} height={30} />
           </div>
         )}

@@ -139,8 +139,8 @@ two channels on this board), **Sum/Subtract** mixes.
 
 - **No menu bar, no status bar.** One **header bar** with window controls; on
   content-heavy pages it may be *flat* (same bg as content, no border — the
-  ToolbarView "flat header bar" style). Primary menu (⋮) on the right holds
-  About/Settings if not in a sidebar.
+  ToolbarView "flat header bar" style). A hamburger primary menu on the right
+  holds About/Settings if not in a sidebar.
 - **Sidebar navigation** (`AdwNavigationSplitView` + `.navigation-sidebar`):
   sidebar bg is darker than content, selected row uses a **neutral**
   (white-alpha) highlight, *not* accent color. Rows are rounded and padded.

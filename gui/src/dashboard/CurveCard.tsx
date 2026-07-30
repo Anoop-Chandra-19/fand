@@ -19,7 +19,7 @@ function DutyNow({
 }) {
   return (
     <div
-      className="flex items-baseline gap-[6px]"
+      className="flex items-baseline gap-1.5"
       title={
         estimate
           ? "instant curve output — the daemon applies hysteresis, smoothing and floors on top"
@@ -37,7 +37,7 @@ function DutyNow({
 
 function SensorLine({ sensor, temp }: { sensor: string; temp?: number }) {
   return (
-    <div className="flex items-center gap-[6px] text-[0.82rem] text-dim">
+    <div className="flex items-center gap-1.5 text-[0.82rem] text-dim">
       <span>sensor</span>
       <span className="font-mono text-ink">{sensor}</span>
       <span className="numeric ml-auto text-warning">
@@ -74,7 +74,7 @@ export function CurveCard({
           <h3 className="numeric m-0 text-[1.18rem] font-bold">{name}</h3>
           <Badge tone="accent">{info.kind}</Badge>
         </div>
-        <div className="flex flex-wrap justify-end gap-[5px]">
+        <div className="flex flex-wrap justify-end gap-1.25">
           {usedBy.length ? (
             usedBy.map((u) => <Badge key={u}>{u}</Badge>)
           ) : (
@@ -89,7 +89,7 @@ export function CurveCard({
             <DutyNow output={output} caption="duty now · estimate" estimate />
             <span className="text-[0.82rem] text-accent">Edit curve</span>
           </div>
-          <div className="rounded-[10px] bg-view px-[6px] pb-[6px] pt-2">
+          <div className="rounded-[10px] bg-view px-1.5 pb-1.5 pt-2">
             <CurveSparkline
               points={info.points}
               liveTemp={temps[info.sensor]}
@@ -103,13 +103,13 @@ export function CurveCard({
       )}
 
       {info.kind === "mix" && (
-        <div className="flex flex-col gap-[10px]">
+        <div className="flex flex-col gap-2.5">
           <DutyNow
             output={output}
             caption={`${info.function} of ${info.members.length} curves · estimate`}
             estimate
           />
-          <div className="flex flex-wrap gap-[6px]">
+          <div className="flex flex-wrap gap-1.5">
             {info.members.map((m) => (
               <Badge key={m}>{m}</Badge>
             ))}
@@ -127,7 +127,7 @@ export function CurveCard({
       )}
 
       {info.kind === "trigger" && (
-        <div className="flex flex-col gap-[10px]">
+        <div className="flex flex-col gap-2.5">
           <div className="numeric flex flex-col gap-1 text-[0.82rem]">
             <div>
               <span className="text-dim">idle ≤ </span>
@@ -162,9 +162,9 @@ export function AddCurveCard({ onClick }: { onClick: () => void }) {
     <button
       type="button"
       onClick={onClick}
-      className="flex min-h-[200px] cursor-pointer flex-col items-center justify-center gap-2 rounded-card border-2 border-dashed border-separator text-dim transition-colors duration-200 hover:bg-[var(--flat-hover-fill)] hover:text-ink"
+      className="flex min-h-50 cursor-pointer flex-col items-center justify-center gap-2 rounded-card border-2 border-dashed border-separator text-dim transition-colors duration-200 hover:bg-(--flat-hover-fill) hover:text-ink"
     >
-      <span className="flex h-[34px] w-[34px] items-center justify-center rounded-full bg-white/9">
+      <span className="flex h-8.5 w-8.5 items-center justify-center rounded-full bg-white/9">
         <PlusIcon size={18} />
       </span>
       New curve

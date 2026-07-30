@@ -33,7 +33,7 @@ export function Button({
       type="button"
       disabled={disabled}
       onClick={onClick}
-      className={`inline-flex select-none items-center justify-center gap-[6px] font-bold leading-tight transition-[background-color,filter] duration-200 ease-out disabled:pointer-events-none disabled:opacity-45 ${shape} ${FILLS[variant]} ${className}`}
+      className={`inline-flex select-none items-center justify-center gap-1.5 font-bold leading-tight transition-[background-color,filter] duration-200 ease-out disabled:pointer-events-none disabled:opacity-45 ${shape} ${FILLS[variant]} ${className}`}
     >
       {children}
     </button>

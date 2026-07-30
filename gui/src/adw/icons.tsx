@@ -14,8 +14,22 @@ function Svg({ size = 16, children }: IconProps & { children: React.ReactNode })
   );
 }
 
-/** ⋮ primary-menu dots. */
+/** Primary app menu, matching GTK's open-menu-symbolic icon. */
 export function MenuIcon(props: IconProps) {
+  return (
+    <Svg {...props}>
+      <path
+        d="M2.5 4h11M2.5 8h11M2.5 12h11"
+        stroke="currentColor"
+        strokeWidth={1.5}
+        strokeLinecap="square"
+      />
+    </Svg>
+  );
+}
+
+/** Vertical overflow menu for contextual actions. */
+export function MoreIcon(props: IconProps) {
   return (
     <Svg {...props}>
       <circle cx={8} cy={3} r={1.4} fill="currentColor" />

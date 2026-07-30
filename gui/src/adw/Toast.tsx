@@ -8,7 +8,7 @@ import type { ReactNode } from "react";
 export function ToastOverlay({ toast }: { toast: ReactNode | null }) {
   if (!toast) return null;
   return (
-    <div className="pointer-events-none fixed inset-x-0 bottom-[22px] z-80 flex justify-center">
+    <div className="pointer-events-none fixed inset-x-0 bottom-5.5 z-80 flex justify-center">
       <div
         role="status"
         className="pointer-events-auto inline-flex items-center gap-3 rounded-full bg-popover py-2 pl-4 pr-4 shadow-popover"

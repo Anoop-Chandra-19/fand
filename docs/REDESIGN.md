@@ -232,7 +232,7 @@ A fourth round (2026-07-10, post-8b review) closed:
 
 - `tauri.conf.json`: `decorations: false`; title stays "fand" (alt-tab only).
 - Headerbar component: `data-tauri-drag-region`, circular close button
-  (GNOME default layout = close only), ⋮ primary menu → Preferences, About.
+  (GNOME default layout = close only), hamburger primary menu → Preferences, About.
 - Sidebar deleted (Overview absorbs Curves in phase 10; Settings becomes the
   Preferences dialog).
 - `index.css` rebuilt on libadwaita values (RESEARCH.md §B.2–B.5): palette as
@@ -274,7 +274,7 @@ Implemented from the Claude Design project ("fand design system",
 tokens/components were ported into `gui/src/adw/` (Button, Card, Badge,
 Banner, Toast, StatusPage, boxed-list rows, Dialog) on Tailwind, with
 `index.css` rebuilt on the libadwaita values. Delivered: CSD shell
-(`decorations: false`, drag-region headerbar, ⋮ menu, circular close),
+(`decorations: false`, drag-region headerbar, hamburger menu, circular close),
 single-view Overview (Temperatures chart card, Fans cards, Curves cards +
 dashed New-curve), curve editor dialogs for **all four kinds** (graph
 two-pane with drag editing + hysteresis-up/down + response rows, batch
